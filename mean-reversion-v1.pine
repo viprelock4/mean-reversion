@@ -1,0 +1,143 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © mean-reversion-v1
+
+//@version=6
+strategy("Mean Reversion V1", overlay=true, default_qty_type=strategy.percent_of_equity, default_qty_value=10)
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Inputs
+// ──────────────────────────────────────────────────────────────────────────────
+
+// Moving Average
+maLength      = input.int(50, "MA Length", minval=1, group="Moving Average")
+maType        = input.string("SMA", "MA Type", options=["SMA", "EMA", "WMA", "VWMA"], group="Moving Average")
+
+// Bollinger Bands
+bbLength      = input.int(20, "BB Length", minval=1, group="Bollinger Bands")
+bbMult        = input.float(2.0, "BB Multiplier", minval=0.1, step=0.1, group="Bollinger Bands")
+
+// RSI Filter
+useRsiFilter  = input.bool(true, "Use RSI Filter", group="RSI")
+rsiLength     = input.int(14, "RSI Length", minval=1, group="RSI")
+rsiOversold   = input.int(30, "RSI Oversold", minval=0, maxval=100, group="RSI")
+rsiOverbought = input.int(70, "RSI Overbought", minval=0, maxval=100, group="RSI")
+
+// Z-Score Entry
+zScoreLength  = input.int(20, "Z-Score Lookback", minval=2, group="Z-Score")
+zEntryThresh  = input.float(2.0, "Z-Score Entry Threshold", minval=0.1, step=0.1, group="Z-Score")
+zExitThresh   = input.float(0.0, "Z-Score Exit Threshold", minval=-1.0, step=0.1, group="Z-Score")
+
+// Risk Management
+useStopLoss   = input.bool(true, "Use Stop Loss", group="Risk Management")
+stopLossPct   = input.float(3.0, "Stop Loss %", minval=0.1, step=0.1, group="Risk Management")
+useTakeProfit  = input.bool(true, "Use Take Profit", group="Risk Management")
+takeProfitPct  = input.float(3.0, "Take Profit %", minval=0.1, step=0.1, group="Risk Management")
+maxOpenTrades  = input.int(1, "Max Open Trades", minval=1, group="Risk Management")
+
+// Date Filter
+useDateFilter  = input.bool(false, "Use Date Filter", group="Date Filter")
+startDate      = input.time(timestamp("2020-01-01"), "Start Date", group="Date Filter")
+endDate        = input.time(timestamp("2030-12-31"), "End Date", group="Date Filter")
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Calculations
+// ──────────────────────────────────────────────────────────────────────────────
+
+// Moving Average
+ma = switch maType
+    "SMA"  => ta.sma(close, maLength)
+    "EMA"  => ta.ema(close, maLength)
+    "WMA"  => ta.wma(close, maLength)
+    "VWMA" => ta.vwma(close, maLength)
+
+// Bollinger Bands
+bbBasis = ta.sma(close, bbLength)
+bbDev   = bbMult * ta.stdev(close, bbLength)
+bbUpper = bbBasis + bbDev
+bbLower = bbBasis - bbDev
+
+// RSI
+rsi = ta.rsi(close, rsiLength)
+
+// Z-Score (deviation from mean in standard deviation units)
+zMean  = ta.sma(close, zScoreLength)
+zStdev = ta.stdev(close, zScoreLength)
+zScore = zStdev != 0 ? (close - zMean) / zStdev : 0.0
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Conditions
+// ──────────────────────────────────────────────────────────────────────────────
+
+// Date filter
+inDateRange = not useDateFilter or (time >= startDate and time <= endDate)
+
+// RSI conditions
+rsiLongOk  = not useRsiFilter or rsi < rsiOversold
+rsiShortOk = not useRsiFilter or rsi > rsiOverbought
+
+// Mean reversion long: price is significantly below the mean
+longCondition  = zScore <= -zEntryThresh and close < bbLower and rsiLongOk and inDateRange
+shortCondition = zScore >= zEntryThresh and close > bbUpper and rsiShortOk and inDateRange
+
+// Exit conditions: price reverts back toward the mean
+exitLongCondition  = zScore >= zExitThresh or close >= bbBasis
+exitShortCondition = zScore <= -zExitThresh or close <= bbBasis
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Strategy Execution
+// ──────────────────────────────────────────────────────────────────────────────
+
+// Track open trades
+openTrades = strategy.opentrades
+
+if longCondition and openTrades < maxOpenTrades
+    strategy.entry("Long", strategy.long)
+
+if shortCondition and openTrades < maxOpenTrades
+    strategy.entry("Short", strategy.short)
+
+if exitLongCondition
+    strategy.close("Long", comment="Mean Revert Exit")
+
+if exitShortCondition
+    strategy.close("Short", comment="Mean Revert Exit")
+
+// Stop Loss and Take Profit
+if useStopLoss or useTakeProfit
+    slLong  = useStopLoss   ? strategy.position_avg_price * (1 - stopLossPct / 100)  : na
+    tpLong  = useTakeProfit  ? strategy.position_avg_price * (1 + takeProfitPct / 100) : na
+    slShort = useStopLoss   ? strategy.position_avg_price * (1 + stopLossPct / 100)  : na
+    tpShort = useTakeProfit  ? strategy.position_avg_price * (1 - takeProfitPct / 100) : na
+
+    strategy.exit("Long SL/TP", "Long", stop=slLong, limit=tpLong)
+    strategy.exit("Short SL/TP", "Short", stop=slShort, limit=tpShort)
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Plotting
+// ──────────────────────────────────────────────────────────────────────────────
+
+// Moving Average
+plot(ma, "Moving Average", color=color.yellow, linewidth=2)
+
+// Bollinger Bands
+pBasis = plot(bbBasis, "BB Basis", color=color.gray)
+pUpper = plot(bbUpper, "BB Upper", color=color.red)
+pLower = plot(bbLower, "BB Lower", color=color.green)
+fill(pUpper, pBasis, color=color.new(color.red, 90))
+fill(pBasis, pLower, color=color.new(color.green, 90))
+
+// Entry signals
+plotshape(longCondition, "Long Signal", shape.triangleup, location.belowbar, color.green, size=size.small)
+plotshape(shortCondition, "Short Signal", shape.triangledown, location.abovebar, color.red, size=size.small)
+
+// Z-Score panel
+hline(0, "Zero", color=color.gray, display=display.none)
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Alerts
+// ──────────────────────────────────────────────────────────────────────────────
+
+alertcondition(longCondition, "Mean Reversion Long", "Price is oversold — potential long entry")
+alertcondition(shortCondition, "Mean Reversion Short", "Price is overbought — potential short entry")
+alertcondition(exitLongCondition, "Exit Long", "Price has reverted to mean — close long")
+alertcondition(exitShortCondition, "Exit Short", "Price has reverted to mean — close short")
