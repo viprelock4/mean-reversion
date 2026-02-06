@@ -2,7 +2,7 @@
 // © mean-reversion-v2 — Z-Score Oscillator Matching Tool
 
 //@version=6
-indicator("MR Match-It V2", shorttitle="MR-MatchIt V2", overlay=false, precision=4,
+indicator("MR Match-It V2", shorttitle="MRMatchV2", overlay=false, precision=4,
      max_labels_count=1, max_bars_back=500)
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -324,18 +324,31 @@ float src = switch srcType
 int bLen = math.max(baseLen, 2)
 
 float _sma  = ta.sma(src, bLen)
-float _ema  = ta.ema(src, bLen)
 float _wma  = ta.wma(src, bLen)
-float _e1   = ta.ema(src, bLen)
-float _e2   = ta.ema(_e1, bLen)
-float _e3   = ta.ema(_e2, bLen)
-float _dema = 2 * _e1 - _e2
-float _tema = 3 * _e1 - 3 * _e2 + _e3
+
+// Manual EMA — ta.ema requires simple int; bLen is series int from preset arrays
+float _emaA = 2.0 / (bLen + 1)
+var float _ema = na
+_ema := na(_ema[1]) ? src : _emaA * src + (1 - _emaA) * _ema[1]
+
+// EMA of EMA (for DEMA / TEMA)
+var float _e2 = na
+_e2 := na(_e2[1]) ? _ema : _emaA * _ema + (1 - _emaA) * _e2[1]
+var float _e3 = na
+_e3 := na(_e3[1]) ? _e2 : _emaA * _e2 + (1 - _emaA) * _e3[1]
+
+float _dema = 2 * _ema - _e2
+float _tema = 3 * _ema - 3 * _e2 + _e3
 int   hLen  = math.max(math.round(bLen / 2), 1)
 int   sqLen = math.max(math.round(math.sqrt(bLen)), 1)
 float _hull = ta.wma(2 * ta.wma(src, hLen) - ta.wma(src, bLen), sqLen)
 float _alma = ta.alma(src, bLen, 0.85, 6)
-float _rma  = ta.rma(src, bLen)
+
+// Manual RMA — ta.rma requires simple int
+float _rmaA = 1.0 / bLen
+var float _rma = na
+_rma := na(_rma[1]) ? src : _rmaA * src + (1 - _rmaA) * _rma[1]
+
 float _vwma = ta.vwma(src, bLen)
 
 float baseline = switch baseType
@@ -367,7 +380,11 @@ float pctStd   = ta.stdev(pctDev, zw)
 float z_pct    = pctStd != 0 ? pctDev / pctStd : 0.0
 
 // --- Method 2: ATR Normalized ---
-float atrVal   = ta.atr(zw)
+// Manual ATR — ta.atr requires simple int
+float _tr      = na(close[1]) ? high - low : math.max(high - low, math.max(math.abs(high - close[1]), math.abs(low - close[1])))
+float _atrA    = 1.0 / zw
+var float atrVal = na
+atrVal := na(atrVal[1]) ? _tr : _atrA * _tr + (1 - _atrA) * atrVal[1]
 float resid2   = src - baseline
 float z_atr    = atrVal != 0 ? resid2 / atrVal : 0.0
 
@@ -411,9 +428,17 @@ int sLen = math.max(smoothLen, 2)
 
 float _smNone = rawZ
 float _smSma  = ta.sma(rawZ, sLen)
-float _smEma  = ta.ema(rawZ, sLen)
 float _smWma  = ta.wma(rawZ, sLen)
-float _smRma  = ta.rma(rawZ, sLen)
+
+// Manual EMA smooth — ta.ema requires simple int
+float _smEmaA = 2.0 / (sLen + 1)
+var float _smEma = na
+_smEma := na(_smEma[1]) ? rawZ : _smEmaA * rawZ + (1 - _smEmaA) * _smEma[1]
+
+// Manual RMA smooth — ta.rma requires simple int
+float _smRmaA = 1.0 / sLen
+var float _smRma = na
+_smRma := na(_smRma[1]) ? rawZ : _smRmaA * rawZ + (1 - _smRmaA) * _smRma[1]
 
 float smoothed = switch smoothType
     0 => _smNone
