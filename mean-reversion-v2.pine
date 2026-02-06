@@ -1,0 +1,555 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0
+// © mean-reversion-v2 — Z-Score Oscillator Matching Tool
+
+//@version=6
+indicator("MR Match-It V2", shorttitle="MR-MatchIt V2", overlay=false, precision=4,
+     max_labels_count=1, max_bars_back=500)
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  PRESET SELECTOR
+// ══════════════════════════════════════════════════════════════════════════════
+
+string presetSel = input.string("02: SMA(20) StdZS | NoSmth | Close", "Preset", options=[
+     "01: SMA(14) StdZS | NoSmth | Close",
+     "02: SMA(20) StdZS | NoSmth | Close",
+     "03: SMA(30) StdZS | NoSmth | Close",
+     "04: SMA(50) StdZS | NoSmth | Close",
+     "05: SMA(20) StdZS | EMA3 | Close",
+     "06: SMA(20) StdZS | EMA5 | Close",
+     "07: SMA(20) StdZS | EMA7 | Close",
+     "08: SMA(30) StdZS | EMA5 | Close",
+     "09: SMA(50) StdZS | EMA7 | Close",
+     "10: SMA(20) StdZS | SMA5 | Close",
+     "11: EMA(14) StdZS | NoSmth | Close",
+     "12: EMA(20) StdZS | NoSmth | Close",
+     "13: EMA(30) StdZS | NoSmth | Close",
+     "14: EMA(50) StdZS | NoSmth | Close",
+     "15: EMA(20) StdZS | EMA3 | Close",
+     "16: EMA(20) StdZS | EMA5 | Close",
+     "17: EMA(30) StdZS | EMA5 | Close",
+     "18: EMA(50) StdZS | EMA7 | Close",
+     "19: WMA(20) StdZS | NoSmth | Close",
+     "20: WMA(30) StdZS | EMA5 | Close",
+     "21: VWMA(20) StdZS | NoSmth | Close",
+     "22: VWMA(30) StdZS | EMA5 | Close",
+     "23: DEMA(14) StdZS | NoSmth | Close",
+     "24: DEMA(20) StdZS | EMA5 | Close",
+     "25: DEMA(30) StdZS | EMA5 | Close",
+     "26: TEMA(14) StdZS | NoSmth | Close",
+     "27: TEMA(20) StdZS | EMA5 | Close",
+     "28: TEMA(30) StdZS | EMA5 | Close",
+     "29: Hull(14) StdZS | NoSmth | Close",
+     "30: Hull(20) StdZS | NoSmth | Close",
+     "31: Hull(20) StdZS | EMA5 | Close",
+     "32: Hull(30) StdZS | EMA5 | Close",
+     "33: ALMA(20) StdZS | NoSmth | Close",
+     "34: ALMA(20) StdZS | EMA5 | Close",
+     "35: ALMA(30) StdZS | EMA5 | Close",
+     "36: RMA(14) StdZS | NoSmth | Close",
+     "37: RMA(20) StdZS | EMA5 | Close",
+     "38: RMA(30) StdZS | EMA5 | Close",
+     "39: SMA(20) StdZS | NoSmth | HLC3",
+     "40: SMA(20) StdZS | EMA5 | HLC3",
+     "41: EMA(20) StdZS | EMA5 | HLC3",
+     "42: SMA(20) StdZS | NoSmth | HL2",
+     "43: EMA(20) StdZS | EMA5 | HL2",
+     "44: SMA(20) StdZS | EMA5 | OHLC4",
+     "45: SMA(20) PctDev | NoSmth | Close",
+     "46: SMA(30) PctDev | EMA5 | Close",
+     "47: EMA(20) PctDev | NoSmth | Close",
+     "48: EMA(20) PctDev | EMA5 | Close",
+     "49: EMA(30) PctDev | EMA5 | Close",
+     "50: SMA(20) AtrNrm | NoSmth | Close",
+     "51: SMA(30) AtrNrm | EMA5 | Close",
+     "52: EMA(20) AtrNrm | NoSmth | Close",
+     "53: EMA(20) AtrNrm | EMA5 | Close",
+     "54: EMA(30) AtrNrm | EMA5 | Close",
+     "55: LinReg(20) RegZS | NoSmth | Close",
+     "56: LinReg(30) RegZS | NoSmth | Close",
+     "57: LinReg(20) RegZS | EMA5 | Close",
+     "58: LinReg(30) RegZS | EMA5 | Close",
+     "59: LinReg(50) RegZS | EMA7 | Close",
+     "60: SMA(50) StdZS zw20 | NoSmth | Close",
+     "61: EMA(50) StdZS zw20 | NoSmth | Close",
+     "62: SMA(50) StdZS zw20 | EMA5 | Close",
+     "63: EMA(50) StdZS zw30 | EMA5 | Close",
+     "64: SMA(100) StdZS zw20 | EMA5 | Close",
+     "65: BB(20) BollZS | NoSmth | Close",
+     "66: BB(20) BollZS | EMA5 | Close",
+     "67: BB(30) BollZS | EMA5 | Close",
+     "68: ROC(14) MomZS | NoSmth | Close",
+     "69: ROC(20) MomZS | EMA5 | Close",
+     "70: ROC(30) MomZS | EMA5 | Close",
+     "71: EMA(20) StdZS | EMA14 | Close",
+     "72: SMA(50) StdZS | EMA14 | Close",
+     "73: EMA(50) StdZS | EMA14 | Close",
+     "74: SMA(20) PctDev | EMA14 | Close",
+     "75: EMA(20) AtrNrm | EMA14 | Close"
+     ], group="1. Preset")
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  OVERRIDE INPUTS
+// ══════════════════════════════════════════════════════════════════════════════
+
+string ovMethod    = input.string("Preset", "Method", options=["Preset","StdZScore","PctDev","AtrNorm","Regression","BollingerZS","MomentumZS"], group="2. Overrides")
+string ovSrc       = input.string("Preset", "Source", options=["Preset","close","hlc3","hl2","ohlc4"], group="2. Overrides")
+string ovBase      = input.string("Preset", "Baseline MA", options=["Preset","SMA","EMA","WMA","DEMA","TEMA","HullMA","ALMA","RMA","VWMA"], group="2. Overrides")
+int    ovBaseLen   = input.int(0, "Baseline Length (0=preset)", minval=0, maxval=500, group="2. Overrides")
+int    ovZWin      = input.int(0, "Z-Score Window (0=preset)", minval=0, maxval=500, group="2. Overrides")
+string ovSmooth    = input.string("Preset", "Smoothing", options=["Preset","None","SMA","EMA","WMA","RMA"], group="2. Overrides")
+int    ovSmoothLen = input.int(0, "Smooth Length (0=preset)", minval=0, maxval=100, group="2. Overrides")
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  GAIN / BIAS / SCALING
+// ══════════════════════════════════════════════════════════════════════════════
+
+float gain = input.float(1.0, "Gain (multiplier)", minval=0.01, step=0.05, group="3. Scaling")
+float bias = input.float(0.0, "Bias (offset)", step=0.05, group="3. Scaling")
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  SIGNAL DOTS & NOISE SUPPRESSION
+// ══════════════════════════════════════════════════════════════════════════════
+
+int   noiseSup     = input.int(30, "Noise Suppression", minval=0, maxval=50, step=10, group="4. Signals")
+float upperDotLvl  = input.float(0.5, "Upper Dot Level", step=0.05, group="4. Signals")
+float lowerDotLvl  = input.float(-0.5, "Lower Dot Level", step=0.05, group="4. Signals")
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  DISPLAY
+// ══════════════════════════════════════════════════════════════════════════════
+
+bool  showTable    = input.bool(true, "Show Settings Table", group="5. Display")
+string tblPos      = input.string("Top Right", "Table Position", options=["Top Left","Top Right","Bottom Left","Bottom Right"], group="5. Display")
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  PRESET PARAMETER ARRAYS
+//  Index maps: method, baseType, baseLen, zWindow, smoothType, smoothLen, srcType
+//  method:  0=StdZS 1=PctDev 2=AtrNorm 3=Regression 4=BollZS 5=MomZS
+//  base:    0=SMA 1=EMA 2=WMA 3=DEMA 4=TEMA 5=Hull 6=ALMA 7=RMA 8=VWMA
+//  smooth:  0=None 1=SMA 2=EMA 3=WMA 4=RMA
+//  src:     0=close 1=hlc3 2=hl2 3=ohlc4
+// ══════════════════════════════════════════════════════════════════════════════
+
+var int[] pMeth = array.from(
+     0,0,0,0,0,0,0,0,0,0,
+     0,0,0,0,0,0,0,0,
+     0,0,0,0,
+     0,0,0,0,0,0,
+     0,0,0,0,
+     0,0,0,
+     0,0,0,
+     0,0,0,0,0,0,
+     1,1,1,1,1,
+     2,2,2,2,2,
+     3,3,3,3,3,
+     0,0,0,0,0,
+     4,4,4,
+     5,5,5,
+     0,0,0,1,2)
+
+var int[] pBase = array.from(
+     0,0,0,0,0,0,0,0,0,0,
+     1,1,1,1,1,1,1,1,
+     2,2,8,8,
+     3,3,3,4,4,4,
+     5,5,5,5,
+     6,6,6,
+     7,7,7,
+     0,0,1,0,1,0,
+     0,0,1,1,1,
+     0,0,1,1,1,
+     0,0,0,0,0,
+     0,1,0,1,0,
+     0,0,0,
+     0,0,0,
+     1,0,1,0,1)
+
+var int[] pBLen = array.from(
+     14,20,30,50,20,20,20,30,50,20,
+     14,20,30,50,20,20,30,50,
+     20,30,20,30,
+     14,20,30,14,20,30,
+     14,20,20,30,
+     20,20,30,
+     14,20,30,
+     20,20,20,20,20,20,
+     20,30,20,20,30,
+     20,30,20,20,30,
+     20,30,20,30,50,
+     50,50,50,50,100,
+     20,20,30,
+     14,20,30,
+     20,50,50,20,20)
+
+var int[] pZW = array.from(
+     0,0,0,0,0,0,0,0,0,0,
+     0,0,0,0,0,0,0,0,
+     0,0,0,0,
+     0,0,0,0,0,0,
+     0,0,0,0,
+     0,0,0,
+     0,0,0,
+     0,0,0,0,0,0,
+     0,0,0,0,0,
+     0,0,0,0,0,
+     0,0,0,0,0,
+     20,20,20,30,20,
+     20,20,30,
+     14,20,30,
+     0,0,0,0,0)
+
+var int[] pSmT = array.from(
+     0,0,0,0,2,2,2,2,2,1,
+     0,0,0,0,2,2,2,2,
+     0,2,0,2,
+     0,2,2,0,2,2,
+     0,0,2,2,
+     0,2,2,
+     0,2,2,
+     0,2,2,0,2,2,
+     0,2,0,2,2,
+     0,2,0,2,2,
+     0,0,2,2,2,
+     0,0,2,2,2,
+     0,2,2,
+     0,2,2,
+     2,2,2,2,2)
+
+var int[] pSmL = array.from(
+     0,0,0,0,3,5,7,5,7,5,
+     0,0,0,0,3,5,5,7,
+     0,5,0,5,
+     0,5,5,0,5,5,
+     0,0,5,5,
+     0,5,5,
+     0,5,5,
+     0,5,5,0,5,5,
+     0,5,0,5,5,
+     0,5,0,5,5,
+     0,0,5,5,7,
+     0,0,5,5,5,
+     0,5,5,
+     0,5,5,
+     14,14,14,14,14)
+
+var int[] pSrc = array.from(
+     0,0,0,0,0,0,0,0,0,0,
+     0,0,0,0,0,0,0,0,
+     0,0,0,0,
+     0,0,0,0,0,0,
+     0,0,0,0,
+     0,0,0,
+     0,0,0,
+     1,1,1,2,2,3,
+     0,0,0,0,0,
+     0,0,0,0,0,
+     0,0,0,0,0,
+     0,0,0,0,0,
+     0,0,0,
+     0,0,0,
+     0,0,0,0,0)
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  DECODE PRESET
+// ══════════════════════════════════════════════════════════════════════════════
+
+int pIdx = math.max(int(str.tonumber(str.substring(presetSel, 0, 2))) - 1, 0)
+
+int    _method    = array.get(pMeth, pIdx)
+int    _baseType  = array.get(pBase, pIdx)
+int    _baseLen   = array.get(pBLen, pIdx)
+int    _zWin      = array.get(pZW, pIdx)
+int    _smoothTyp = array.get(pSmT, pIdx)
+int    _smoothLen = array.get(pSmL, pIdx)
+int    _srcType   = array.get(pSrc, pIdx)
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  APPLY OVERRIDES
+// ══════════════════════════════════════════════════════════════════════════════
+
+int method = ovMethod == "Preset" ? _method :
+     ovMethod == "StdZScore" ? 0 :
+     ovMethod == "PctDev" ? 1 :
+     ovMethod == "AtrNorm" ? 2 :
+     ovMethod == "Regression" ? 3 :
+     ovMethod == "BollingerZS" ? 4 :
+     ovMethod == "MomentumZS" ? 5 : _method
+
+int baseType = ovBase == "Preset" ? _baseType :
+     ovBase == "SMA" ? 0 :
+     ovBase == "EMA" ? 1 :
+     ovBase == "WMA" ? 2 :
+     ovBase == "DEMA" ? 3 :
+     ovBase == "TEMA" ? 4 :
+     ovBase == "HullMA" ? 5 :
+     ovBase == "ALMA" ? 6 :
+     ovBase == "RMA" ? 7 :
+     ovBase == "VWMA" ? 8 : _baseType
+
+int baseLen = ovBaseLen > 0 ? ovBaseLen : _baseLen
+
+int zWinRaw = ovZWin > 0 ? ovZWin : _zWin
+int zWin    = zWinRaw > 0 ? zWinRaw : baseLen
+
+int smoothType = ovSmooth == "Preset" ? _smoothTyp :
+     ovSmooth == "None" ? 0 :
+     ovSmooth == "SMA" ? 1 :
+     ovSmooth == "EMA" ? 2 :
+     ovSmooth == "WMA" ? 3 :
+     ovSmooth == "RMA" ? 4 : _smoothTyp
+
+int smoothLen = ovSmoothLen > 0 ? ovSmoothLen : (_smoothLen > 0 ? _smoothLen : 5)
+
+int srcType = ovSrc == "Preset" ? _srcType :
+     ovSrc == "close" ? 0 :
+     ovSrc == "hlc3" ? 1 :
+     ovSrc == "hl2" ? 2 :
+     ovSrc == "ohlc4" ? 3 : _srcType
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  SOURCE SELECTION
+// ══════════════════════════════════════════════════════════════════════════════
+
+float src = switch srcType
+    0 => close
+    1 => hlc3
+    2 => hl2
+    3 => ohlc4
+    => close
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  BASELINE CALCULATION — all types pre-computed
+// ══════════════════════════════════════════════════════════════════════════════
+
+int bLen = math.max(baseLen, 2)
+
+float _sma  = ta.sma(src, bLen)
+float _ema  = ta.ema(src, bLen)
+float _wma  = ta.wma(src, bLen)
+float _e1   = ta.ema(src, bLen)
+float _e2   = ta.ema(_e1, bLen)
+float _e3   = ta.ema(_e2, bLen)
+float _dema = 2 * _e1 - _e2
+float _tema = 3 * _e1 - 3 * _e2 + _e3
+int   hLen  = math.max(math.round(bLen / 2), 1)
+int   sqLen = math.max(math.round(math.sqrt(bLen)), 1)
+float _hull = ta.wma(2 * ta.wma(src, hLen) - ta.wma(src, bLen), sqLen)
+float _alma = ta.alma(src, bLen, 0.85, 6)
+float _rma  = ta.rma(src, bLen)
+float _vwma = ta.vwma(src, bLen)
+
+float baseline = switch baseType
+    0 => _sma
+    1 => _ema
+    2 => _wma
+    3 => _dema
+    4 => _tema
+    5 => _hull
+    6 => _alma
+    7 => _rma
+    8 => _vwma
+    => _sma
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  Z-SCORE CALCULATION
+// ══════════════════════════════════════════════════════════════════════════════
+
+int zw = math.max(zWin, 2)
+
+// --- Method 0: Standard Z-Score ---
+float resid0   = src - baseline
+float std0     = ta.stdev(src, zw)
+float z_std    = std0 != 0 ? resid0 / std0 : 0.0
+
+// --- Method 1: Percentage Deviation Z-Score ---
+float pctDev   = baseline != 0 ? (src - baseline) / baseline : 0.0
+float pctStd   = ta.stdev(pctDev, zw)
+float z_pct    = pctStd != 0 ? pctDev / pctStd : 0.0
+
+// --- Method 2: ATR Normalized ---
+float atrVal   = ta.atr(zw)
+float resid2   = src - baseline
+float z_atr    = atrVal != 0 ? resid2 / atrVal : 0.0
+
+// --- Method 3: Regression Residual Z-Score ---
+float regLine  = ta.linreg(src, bLen, 0)
+float regResid = src - regLine
+float regStd   = ta.stdev(regResid, zw)
+float z_reg    = regStd != 0 ? regResid / regStd : 0.0
+
+// --- Method 4: Bollinger %B Z-Score ---
+float bbBasis  = ta.sma(src, bLen)
+float bbDev    = 2.0 * ta.stdev(src, bLen)
+float bbUpper  = bbBasis + bbDev
+float bbLower  = bbBasis - bbDev
+float bbRange  = bbUpper - bbLower
+float pctB     = bbRange != 0 ? (src - bbLower) / bbRange - 0.5 : 0.0
+float pctBStd  = ta.stdev(pctB, zw)
+float z_boll   = pctBStd != 0 ? pctB / pctBStd : 0.0
+
+// --- Method 5: Momentum / ROC Z-Score ---
+float rocVal   = src[bLen] != 0 ? src / src[bLen] - 1.0 : 0.0
+float rocStd   = ta.stdev(rocVal, zw)
+float rocMean  = ta.sma(rocVal, zw)
+float z_mom    = rocStd != 0 ? (rocVal - rocMean) / rocStd : 0.0
+
+// Select method
+float rawZ = switch method
+    0 => z_std
+    1 => z_pct
+    2 => z_atr
+    3 => z_reg
+    4 => z_boll
+    5 => z_mom
+    => z_std
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  SMOOTHING
+// ══════════════════════════════════════════════════════════════════════════════
+
+int sLen = math.max(smoothLen, 2)
+
+float _smNone = rawZ
+float _smSma  = ta.sma(rawZ, sLen)
+float _smEma  = ta.ema(rawZ, sLen)
+float _smWma  = ta.wma(rawZ, sLen)
+float _smRma  = ta.rma(rawZ, sLen)
+
+float smoothed = switch smoothType
+    0 => _smNone
+    1 => _smSma
+    2 => _smEma
+    3 => _smWma
+    4 => _smRma
+    => _smNone
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  GAIN / BIAS
+// ══════════════════════════════════════════════════════════════════════════════
+
+float matchIt = smoothed * gain + bias
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  SIGNAL DOTS (Peak / Trough detection + Noise Suppression)
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Detect turning points at bar[1] to avoid repaint
+bool rawPeak   = matchIt[1] > matchIt[2] and matchIt[1] > matchIt[0]
+bool rawTrough = matchIt[1] < matchIt[2] and matchIt[1] < matchIt[0]
+
+bool peakAbove   = rawPeak   and matchIt[1] > upperDotLvl
+bool troughBelow = rawTrough and matchIt[1] < lowerDotLvl
+
+// Noise suppression: suppress if a stronger signal exists within lookback window
+bool showPeak   = peakAbove
+bool showTrough = troughBelow
+
+if noiseSup > 0 and peakAbove
+    for i = 2 to noiseSup + 1
+        if matchIt[i] > matchIt[1]
+            showPeak := false
+            break
+
+if noiseSup > 0 and troughBelow
+    for i = 2 to noiseSup + 1
+        if matchIt[i] < matchIt[1]
+            showTrough := false
+            break
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  PLOTTING
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Main line
+plot(matchIt, "Match-It", color=color.rgb(33, 150, 243), linewidth=1)
+
+// Signal dots — plotted at bar[1] offset
+plotshape(showPeak   ? matchIt[1] : na, "Peak Dot",   shape.circle, location.absolute, color.rgb(255, 82, 82),  size=size.tiny, offset=-1)
+plotshape(showTrough ? matchIt[1] : na, "Trough Dot", shape.circle, location.absolute, color.rgb(76, 175, 80),  size=size.tiny, offset=-1)
+
+// Reference levels
+hline(upperDotLvl,  "Upper 1",  color=color.new(color.red, 60),   linestyle=hline.style_dashed)
+hline(upperDotLvl/2,"Upper 2",  color=color.new(color.red, 80),   linestyle=hline.style_dashed)
+hline(lowerDotLvl/2,"Lower 2",  color=color.new(color.green, 80), linestyle=hline.style_dashed)
+hline(lowerDotLvl,  "Lower 1",  color=color.new(color.green, 60), linestyle=hline.style_dashed)
+hline(0,            "Zero",     color=color.new(color.gray, 70),  linestyle=hline.style_dotted)
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  DATA WINDOW / CSV EXPORT COLUMNS
+// ══════════════════════════════════════════════════════════════════════════════
+
+plot(rawZ,     "RawZ",     display=display.data_window, color=color.new(color.white, 100))
+plot(baseline, "Baseline", display=display.data_window, color=color.new(color.white, 100))
+plot(src - baseline, "Residual", display=display.data_window, color=color.new(color.white, 100))
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  SETTINGS TABLE
+// ══════════════════════════════════════════════════════════════════════════════
+
+string methNames = switch method
+    0 => "StdZScore"
+    1 => "PctDev"
+    2 => "AtrNorm"
+    3 => "Regression"
+    4 => "BollingerZS"
+    5 => "MomentumZS"
+    => "StdZScore"
+
+string baseNames = switch baseType
+    0 => "SMA"
+    1 => "EMA"
+    2 => "WMA"
+    3 => "DEMA"
+    4 => "TEMA"
+    5 => "HullMA"
+    6 => "ALMA"
+    7 => "RMA"
+    8 => "VWMA"
+    => "SMA"
+
+string smNames = switch smoothType
+    0 => "None"
+    1 => "SMA"
+    2 => "EMA"
+    3 => "WMA"
+    4 => "RMA"
+    => "None"
+
+string srcNames = switch srcType
+    0 => "close"
+    1 => "hlc3"
+    2 => "hl2"
+    3 => "ohlc4"
+    => "close"
+
+var tblPosVal = tblPos == "Top Left" ? position.top_left :
+     tblPos == "Top Right" ? position.top_right :
+     tblPos == "Bottom Left" ? position.bottom_left :
+     position.bottom_right
+
+var table settingsTbl = table.new(tblPosVal, 2, 10,
+     bgcolor=color.new(color.black, 30), border_width=1,
+     border_color=color.new(color.gray, 60), frame_width=1,
+     frame_color=color.new(color.gray, 40))
+
+if barstate.islast and showTable
+    table.cell(settingsTbl, 0, 0, "Preset",    text_color=color.gray, text_size=size.small)
+    table.cell(settingsTbl, 1, 0, presetSel,   text_color=color.white, text_size=size.small)
+    table.cell(settingsTbl, 0, 1, "Method",    text_color=color.gray, text_size=size.small)
+    table.cell(settingsTbl, 1, 1, methNames,   text_color=color.yellow, text_size=size.small)
+    table.cell(settingsTbl, 0, 2, "Base MA",   text_color=color.gray, text_size=size.small)
+    table.cell(settingsTbl, 1, 2, baseNames + "(" + str.tostring(baseLen) + ")", text_color=color.yellow, text_size=size.small)
+    table.cell(settingsTbl, 0, 3, "Z-Window",  text_color=color.gray, text_size=size.small)
+    table.cell(settingsTbl, 1, 3, str.tostring(zWin), text_color=color.yellow, text_size=size.small)
+    table.cell(settingsTbl, 0, 4, "Smooth",    text_color=color.gray, text_size=size.small)
+    table.cell(settingsTbl, 1, 4, smNames + (smoothType != 0 ? "(" + str.tostring(smoothLen) + ")" : ""), text_color=color.yellow, text_size=size.small)
+    table.cell(settingsTbl, 0, 5, "Source",    text_color=color.gray, text_size=size.small)
+    table.cell(settingsTbl, 1, 5, srcNames,    text_color=color.yellow, text_size=size.small)
+    table.cell(settingsTbl, 0, 6, "Gain",      text_color=color.gray, text_size=size.small)
+    table.cell(settingsTbl, 1, 6, str.tostring(gain, "#.###"), text_color=color.yellow, text_size=size.small)
+    table.cell(settingsTbl, 0, 7, "Bias",      text_color=color.gray, text_size=size.small)
+    table.cell(settingsTbl, 1, 7, str.tostring(bias, "#.###"), text_color=color.yellow, text_size=size.small)
+    table.cell(settingsTbl, 0, 8, "Noise Sup", text_color=color.gray, text_size=size.small)
+    table.cell(settingsTbl, 1, 8, str.tostring(noiseSup),     text_color=color.yellow, text_size=size.small)
+    table.cell(settingsTbl, 0, 9, "Dots",      text_color=color.gray, text_size=size.small)
+    table.cell(settingsTbl, 1, 9, str.tostring(upperDotLvl,"#.##") + " / " + str.tostring(lowerDotLvl,"#.##"), text_color=color.yellow, text_size=size.small)
