@@ -8,7 +8,7 @@ indicator("MR Mean-Reversion V5", shorttitle="MR-Rev V5", overlay=false, precisi
 // ══════════════════════════════════════════════════════════════════════════════
 //  CORE SETTINGS
 //  Discovered algorithm: WMA(50) baseline, ATR-normalized deviation,
-//  EMA(7) smoothing, ohlc4 source, Gain≈0.3262, Bias≈0.036
+//  EMA(9) smoothing, ohlc4 source, Gain=0.3215, Bias=0.0404  (R=0.9919)
 // ══════════════════════════════════════════════════════════════════════════════
 
 string tradingStyle = input.string("Neutral", "Trading Style",
@@ -28,7 +28,7 @@ int    baseLen      = input.int(50, "Baseline Length", minval=2, maxval=500, gro
 int    atrPeriod    = input.int(50, "ATR Period", minval=2, maxval=500,
      tooltip="Period for ATR normalization. Default matches baseline length.",
      group="1. SETTINGS")
-int    smoothLen    = input.int(7, "Smooth Length (0=none)", minval=0, maxval=100,
+int    smoothLen    = input.int(9, "Smooth Length (0=none)", minval=0, maxval=100,
      tooltip="EMA smoothing applied to the raw oscillator. 0 = no smoothing.",
      group="1. SETTINGS")
 
@@ -36,11 +36,11 @@ int    smoothLen    = input.int(7, "Smooth Length (0=none)", minval=0, maxval=10
 //  SCALING
 // ══════════════════════════════════════════════════════════════════════════════
 
-float gain = input.float(0.3262, "Gain", minval=0.01, step=0.01,
-     tooltip="Amplitude multiplier. Default 0.3262 calibrated to match IA-Mean-Reversion [3.6].",
+float gain = input.float(0.3215, "Gain", minval=0.01, step=0.01,
+     tooltip="Amplitude multiplier. Default 0.3215 calibrated to match IA-Mean-Reversion [3.6] (R=0.9919).",
      group="2. SCALING")
-float bias = input.float(0.036, "Bias", step=0.01,
-     tooltip="Vertical offset. Default 0.036 calibrated to match IA-Mean-Reversion [3.6].",
+float bias = input.float(0.0404, "Bias", step=0.01,
+     tooltip="Vertical offset. Default 0.0404 calibrated to match IA-Mean-Reversion [3.6] (R=0.9919).",
      group="2. SCALING")
 
 // ══════════════════════════════════════════════════════════════════════════════
