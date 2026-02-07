@@ -40,7 +40,10 @@ int    smoothLen    = input.int(9, "Smooth Length (0=none)", minval=0, maxval=10
 // ══════════════════════════════════════════════════════════════════════════════
 
 bool  tfAdaptive   = input.bool(true, "TF Adaptive Periods",
-     tooltip="Auto-scales baseline & ATR periods so all timeframes cover the same calendar window. Calibrated from Daily. Disable to use fixed bar counts.",
+     tooltip="Auto-scales baseline & ATR periods so all timeframes cover ~50 trading days. Disable to use fixed bar counts.",
+     group="2. TF SCALING")
+float tradingHrs   = input.float(6.5, "Trading Hours/Day", minval=1.0, maxval=24.0, step=0.5,
+     tooltip="Trading hours per day for your market. US Stocks=6.5, Crypto/Forex=24.0. Affects TF scaling accuracy.",
      group="2. TF SCALING")
 int   maxPeriod    = input.int(500, "Max Period (cap)", minval=50, maxval=2000, step=50,
      tooltip="Maximum lookback bars after scaling. Prevents excessive computation on very low timeframes.",
@@ -101,13 +104,18 @@ float lowerDotLvl = -upperDotLvl
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  TIMEFRAME SCALING CALCULATION
-//  Scale periods so all TFs cover the same calendar window as Daily.
-//  Daily=1x, 4H=6x, 1H=24x, 5m=288x (capped at maxPeriod).
+//  Scale periods so all TFs cover the same number of TRADING DAYS as Daily.
+//  Uses actual trading hours (6.5h for stocks) not calendar hours (24h).
+//  Daily=1x, 4H≈1.6x, 1H=6.5x, 15m=26x, 5m=78x (capped at maxPeriod).
 // ══════════════════════════════════════════════════════════════════════════════
 
-int tfSec    = timeframe.in_seconds()
-int daySec   = 86400
-float tfScale = tfAdaptive and tfSec > 0 ? math.max(float(daySec) / float(tfSec), 0.15) : 1.0
+int tfSec = timeframe.in_seconds()
+float tradingSecsPerDay = tradingHrs * 3600.0
+
+// For daily+ TFs: 1 bar = 1+ trading days, scale down (or stay at 1)
+// For intraday TFs: bars per trading day = tradingSecsPerDay / tfSec
+float barsPerTradingDay = tfSec >= 86400 ? 1.0 / (float(tfSec) / 86400.0) : tradingSecsPerDay / float(tfSec)
+float tfScale = tfAdaptive ? math.max(barsPerTradingDay, 1.0) : 1.0
 
 int effBaseLen  = math.max(math.min(math.round(baseLen * tfScale), maxPeriod), 10)
 int effAtrLen   = math.max(math.min(math.round(atrPeriod * tfScale), maxPeriod), 10)
