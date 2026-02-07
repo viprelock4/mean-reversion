@@ -1,0 +1,474 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0
+// © mean-reversion-v4 — Lightweight Z-Score Oscillator Match Tool
+
+//@version=6
+indicator("MR Match-It V4", shorttitle="MRMatchV4", overlay=false, precision=4,
+     max_labels_count=1)
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  PRESET SELECTOR  (45 presets)
+//  Default #01 = WMA(50) AtrNorm | EMA7 | OHLC4  (best match: R=0.9841)
+// ══════════════════════════════════════════════════════════════════════════════
+
+string presetSel = input.string("01: WMA(50) AtrNrm | EMA7 | OHLC4", "Preset", options=[
+     "01: WMA(50) AtrNrm | EMA7 | OHLC4",
+     "02: SMA(50) AtrNrm | EMA7 | OHLC4",
+     "03: EMA(50) AtrNrm | EMA7 | OHLC4",
+     "04: HullMA(50) AtrNrm | EMA7 | OHLC4",
+     "05: DEMA(50) AtrNrm | EMA7 | OHLC4",
+     "06: TEMA(50) AtrNrm | EMA7 | OHLC4",
+     "07: WMA(50) AtrNrm | EMA7 | HL2",
+     "08: SMA(50) AtrNrm | EMA7 | HL2",
+     "09: WMA(50) AtrNrm | EMA7 | Close",
+     "10: SMA(50) AtrNrm | EMA7 | Close",
+     "11: WMA(50) StdZS | EMA7 | OHLC4",
+     "12: SMA(50) StdZS | EMA7 | OHLC4",
+     "13: EMA(50) StdZS | EMA7 | OHLC4",
+     "14: WMA(50) StdZS | EMA7 | HL2",
+     "15: SMA(50) StdZS | EMA7 | HL2",
+     "16: EMA(50) StdZS | EMA7 | HL2",
+     "17: WMA(50) StdZS | EMA7 | Close",
+     "18: SMA(50) StdZS | EMA7 | Close",
+     "19: EMA(50) StdZS | EMA7 | Close",
+     "20: WMA(50) PctDev | EMA7 | OHLC4",
+     "21: SMA(50) PctDev | EMA7 | OHLC4",
+     "22: EMA(50) PctDev | EMA7 | OHLC4",
+     "23: WMA(30) AtrNrm | EMA5 | OHLC4",
+     "24: SMA(30) AtrNrm | EMA5 | OHLC4",
+     "25: EMA(30) AtrNrm | EMA5 | OHLC4",
+     "26: WMA(30) StdZS | EMA5 | OHLC4",
+     "27: SMA(30) StdZS | EMA5 | OHLC4",
+     "28: EMA(30) StdZS | EMA5 | OHLC4",
+     "29: WMA(20) AtrNrm | EMA5 | OHLC4",
+     "30: SMA(20) AtrNrm | EMA5 | OHLC4",
+     "31: EMA(20) AtrNrm | EMA5 | OHLC4",
+     "32: WMA(20) StdZS | EMA5 | OHLC4",
+     "33: SMA(20) StdZS | EMA5 | OHLC4",
+     "34: EMA(20) StdZS | EMA5 | OHLC4",
+     "35: WMA(50) AtrNrm | NoSmth | OHLC4",
+     "36: SMA(50) AtrNrm | NoSmth | OHLC4",
+     "37: WMA(50) StdZS | NoSmth | OHLC4",
+     "38: SMA(50) StdZS | NoSmth | OHLC4",
+     "39: WMA(50) AtrNrm | EMA14 | OHLC4",
+     "40: SMA(50) AtrNrm | EMA14 | OHLC4",
+     "41: WMA(50) StdZS | EMA14 | OHLC4",
+     "42: SMA(50) StdZS | EMA14 | OHLC4",
+     "43: WMA(50) AtrNrm | EMA3 | OHLC4",
+     "44: SMA(50) AtrNrm | EMA3 | OHLC4",
+     "45: WMA(14) AtrNrm | EMA5 | OHLC4"
+     ], group="1. PRESET")
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  OVERRIDE INPUTS
+// ══════════════════════════════════════════════════════════════════════════════
+
+string ovMethod    = input.string("Preset", "Method", options=["Preset","StdZScore","PctDev","AtrNorm"], group="2. OVERRIDES")
+string ovSrc       = input.string("Preset", "Source", options=["Preset","close","hlc3","hl2","ohlc4"], group="2. OVERRIDES")
+string ovBase      = input.string("Preset", "Baseline MA", options=["Preset","SMA","EMA","WMA","DEMA","TEMA","HullMA"], group="2. OVERRIDES")
+int    ovBaseLen   = input.int(0, "Baseline Length (0=preset)", minval=0, maxval=500, group="2. OVERRIDES")
+int    ovZWin      = input.int(0, "Z-Score Window (0=preset)", minval=0, maxval=500, group="2. OVERRIDES")
+string ovSmooth    = input.string("Preset", "Smoothing", options=["Preset","None","EMA"], group="2. OVERRIDES")
+int    ovSmoothLen = input.int(0, "Smooth Length (0=preset)", minval=0, maxval=100, group="2. OVERRIDES")
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  GAIN / BIAS / SCALING
+// ══════════════════════════════════════════════════════════════════════════════
+
+float gain = input.float(1.0, "Gain (multiplier)", minval=0.01, step=0.05, group="3. SCALING")
+float bias = input.float(0.0, "Bias (offset)", step=0.05, group="3. SCALING")
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  SIGNAL DOTS & NOISE SUPPRESSION
+// ══════════════════════════════════════════════════════════════════════════════
+
+int   noiseSup     = input.int(30, "Noise Suppression", minval=0, maxval=50, step=10, group="4. SIGNALS")
+float upperDotLvl  = input.float(0.5, "Upper Dot Level", step=0.05, group="4. SIGNALS")
+float lowerDotLvl  = input.float(-0.5, "Lower Dot Level", step=0.05, group="4. SIGNALS")
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  AUTO-FIT  (compare to original indicator)
+// ══════════════════════════════════════════════════════════════════════════════
+
+bool  autoScale    = input.bool(false, "Auto Scale (fit Gain/Bias to Original)", group="5. AUTO-FIT")
+float origPlot     = input.source(close, "Original Plot", tooltip="Point this at the IA-Mean-Reversion plot on your chart", group="5. AUTO-FIT")
+int   corrWindow   = input.int(500, "Correlation Window", minval=50, maxval=5000, step=50, group="5. AUTO-FIT")
+bool  showOrig     = input.bool(true, "Show Original on Chart", group="5. AUTO-FIT")
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  DISPLAY
+// ══════════════════════════════════════════════════════════════════════════════
+
+bool  showTable    = input.bool(true, "Show Settings Table", group="6. DISPLAY")
+string tblPos      = input.string("Top Right", "Table Position", options=["Top Left","Top Right","Bottom Left","Bottom Right"], group="6. DISPLAY")
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  DECODE PRESET — encoded switch (no arrays, all values become input int)
+//  enc1 = method * 100000 + baseType * 1000 + baseLen
+//  enc2 = smoothType * 10000 + smoothLen * 100 + srcType
+//  method:  0=StdZS  1=PctDev  2=AtrNorm
+//  base:    0=SMA  1=EMA  2=WMA  3=DEMA  4=TEMA  5=HullMA
+//  smooth:  0=None  1=EMA
+//  src:     0=close  1=hlc3  2=hl2  3=ohlc4
+// ══════════════════════════════════════════════════════════════════════════════
+
+int enc1 = switch presetSel
+    "01: WMA(50) AtrNrm | EMA7 | OHLC4"   => 202050   // 2*100000 + 2*1000 + 50
+    "02: SMA(50) AtrNrm | EMA7 | OHLC4"   => 200050   // 2*100000 + 0*1000 + 50
+    "03: EMA(50) AtrNrm | EMA7 | OHLC4"   => 201050   // 2*100000 + 1*1000 + 50
+    "04: HullMA(50) AtrNrm | EMA7 | OHLC4"=> 205050   // 2*100000 + 5*1000 + 50
+    "05: DEMA(50) AtrNrm | EMA7 | OHLC4"  => 203050   // 2*100000 + 3*1000 + 50
+    "06: TEMA(50) AtrNrm | EMA7 | OHLC4"  => 204050   // 2*100000 + 4*1000 + 50
+    "07: WMA(50) AtrNrm | EMA7 | HL2"     => 202050
+    "08: SMA(50) AtrNrm | EMA7 | HL2"     => 200050
+    "09: WMA(50) AtrNrm | EMA7 | Close"   => 202050
+    "10: SMA(50) AtrNrm | EMA7 | Close"   => 200050
+    "11: WMA(50) StdZS | EMA7 | OHLC4"    => 2050     // 0*100000 + 2*1000 + 50
+    "12: SMA(50) StdZS | EMA7 | OHLC4"    => 50       // 0*100000 + 0*1000 + 50
+    "13: EMA(50) StdZS | EMA7 | OHLC4"    => 1050     // 0*100000 + 1*1000 + 50
+    "14: WMA(50) StdZS | EMA7 | HL2"      => 2050
+    "15: SMA(50) StdZS | EMA7 | HL2"      => 50
+    "16: EMA(50) StdZS | EMA7 | HL2"      => 1050
+    "17: WMA(50) StdZS | EMA7 | Close"    => 2050
+    "18: SMA(50) StdZS | EMA7 | Close"    => 50
+    "19: EMA(50) StdZS | EMA7 | Close"    => 1050
+    "20: WMA(50) PctDev | EMA7 | OHLC4"   => 102050   // 1*100000 + 2*1000 + 50
+    "21: SMA(50) PctDev | EMA7 | OHLC4"   => 100050
+    "22: EMA(50) PctDev | EMA7 | OHLC4"   => 101050
+    "23: WMA(30) AtrNrm | EMA5 | OHLC4"   => 202030
+    "24: SMA(30) AtrNrm | EMA5 | OHLC4"   => 200030
+    "25: EMA(30) AtrNrm | EMA5 | OHLC4"   => 201030
+    "26: WMA(30) StdZS | EMA5 | OHLC4"    => 2030
+    "27: SMA(30) StdZS | EMA5 | OHLC4"    => 30
+    "28: EMA(30) StdZS | EMA5 | OHLC4"    => 1030
+    "29: WMA(20) AtrNrm | EMA5 | OHLC4"   => 202020
+    "30: SMA(20) AtrNrm | EMA5 | OHLC4"   => 200020
+    "31: EMA(20) AtrNrm | EMA5 | OHLC4"   => 201020
+    "32: WMA(20) StdZS | EMA5 | OHLC4"    => 2020
+    "33: SMA(20) StdZS | EMA5 | OHLC4"    => 20
+    "34: EMA(20) StdZS | EMA5 | OHLC4"    => 1020
+    "35: WMA(50) AtrNrm | NoSmth | OHLC4" => 202050
+    "36: SMA(50) AtrNrm | NoSmth | OHLC4" => 200050
+    "37: WMA(50) StdZS | NoSmth | OHLC4"  => 2050
+    "38: SMA(50) StdZS | NoSmth | OHLC4"  => 50
+    "39: WMA(50) AtrNrm | EMA14 | OHLC4"  => 202050
+    "40: SMA(50) AtrNrm | EMA14 | OHLC4"  => 200050
+    "41: WMA(50) StdZS | EMA14 | OHLC4"   => 2050
+    "42: SMA(50) StdZS | EMA14 | OHLC4"   => 50
+    "43: WMA(50) AtrNrm | EMA3 | OHLC4"   => 202050
+    "44: SMA(50) AtrNrm | EMA3 | OHLC4"   => 200050
+    "45: WMA(14) AtrNrm | EMA5 | OHLC4"   => 202014
+    => 202050
+
+int enc2 = switch presetSel
+    "01: WMA(50) AtrNrm | EMA7 | OHLC4"   => 10703   // 1*10000 + 7*100 + 3
+    "02: SMA(50) AtrNrm | EMA7 | OHLC4"   => 10703
+    "03: EMA(50) AtrNrm | EMA7 | OHLC4"   => 10703
+    "04: HullMA(50) AtrNrm | EMA7 | OHLC4"=> 10703
+    "05: DEMA(50) AtrNrm | EMA7 | OHLC4"  => 10703
+    "06: TEMA(50) AtrNrm | EMA7 | OHLC4"  => 10703
+    "07: WMA(50) AtrNrm | EMA7 | HL2"     => 10702   // 1*10000 + 7*100 + 2
+    "08: SMA(50) AtrNrm | EMA7 | HL2"     => 10702
+    "09: WMA(50) AtrNrm | EMA7 | Close"   => 10700   // 1*10000 + 7*100 + 0
+    "10: SMA(50) AtrNrm | EMA7 | Close"   => 10700
+    "11: WMA(50) StdZS | EMA7 | OHLC4"    => 10703
+    "12: SMA(50) StdZS | EMA7 | OHLC4"    => 10703
+    "13: EMA(50) StdZS | EMA7 | OHLC4"    => 10703
+    "14: WMA(50) StdZS | EMA7 | HL2"      => 10702
+    "15: SMA(50) StdZS | EMA7 | HL2"      => 10702
+    "16: EMA(50) StdZS | EMA7 | HL2"      => 10702
+    "17: WMA(50) StdZS | EMA7 | Close"    => 10700
+    "18: SMA(50) StdZS | EMA7 | Close"    => 10700
+    "19: EMA(50) StdZS | EMA7 | Close"    => 10700
+    "20: WMA(50) PctDev | EMA7 | OHLC4"   => 10703
+    "21: SMA(50) PctDev | EMA7 | OHLC4"   => 10703
+    "22: EMA(50) PctDev | EMA7 | OHLC4"   => 10703
+    "23: WMA(30) AtrNrm | EMA5 | OHLC4"   => 10503   // 1*10000 + 5*100 + 3
+    "24: SMA(30) AtrNrm | EMA5 | OHLC4"   => 10503
+    "25: EMA(30) AtrNrm | EMA5 | OHLC4"   => 10503
+    "26: WMA(30) StdZS | EMA5 | OHLC4"    => 10503
+    "27: SMA(30) StdZS | EMA5 | OHLC4"    => 10503
+    "28: EMA(30) StdZS | EMA5 | OHLC4"    => 10503
+    "29: WMA(20) AtrNrm | EMA5 | OHLC4"   => 10503
+    "30: SMA(20) AtrNrm | EMA5 | OHLC4"   => 10503
+    "31: EMA(20) AtrNrm | EMA5 | OHLC4"   => 10503
+    "32: WMA(20) StdZS | EMA5 | OHLC4"    => 10503
+    "33: SMA(20) StdZS | EMA5 | OHLC4"    => 10503
+    "34: EMA(20) StdZS | EMA5 | OHLC4"    => 10503
+    "35: WMA(50) AtrNrm | NoSmth | OHLC4" => 3       // 0*10000 + 0*100 + 3
+    "36: SMA(50) AtrNrm | NoSmth | OHLC4" => 3
+    "37: WMA(50) StdZS | NoSmth | OHLC4"  => 3
+    "38: SMA(50) StdZS | NoSmth | OHLC4"  => 3
+    "39: WMA(50) AtrNrm | EMA14 | OHLC4"  => 11403   // 1*10000 + 14*100 + 3
+    "40: SMA(50) AtrNrm | EMA14 | OHLC4"  => 11403
+    "41: WMA(50) StdZS | EMA14 | OHLC4"   => 11403
+    "42: SMA(50) StdZS | EMA14 | OHLC4"   => 11403
+    "43: WMA(50) AtrNrm | EMA3 | OHLC4"   => 10303   // 1*10000 + 3*100 + 3
+    "44: SMA(50) AtrNrm | EMA3 | OHLC4"   => 10303
+    "45: WMA(14) AtrNrm | EMA5 | OHLC4"   => 10503
+    => 10703
+
+// Decode enc1: method, baseType, baseLen
+int _method   = enc1 / 100000
+int _baseType = (enc1 / 1000) % 100
+int _baseLen  = enc1 % 1000
+
+// Decode enc2: smoothType, smoothLen, srcType
+int _smoothType = enc2 / 10000
+int _smoothLen  = (enc2 / 100) % 100
+int _srcType    = enc2 % 100
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  APPLY OVERRIDES
+// ══════════════════════════════════════════════════════════════════════════════
+
+int method = ovMethod == "Preset" ? _method :
+     ovMethod == "StdZScore" ? 0 : ovMethod == "PctDev" ? 1 :
+     ovMethod == "AtrNorm" ? 2 : _method
+
+int baseType = ovBase == "Preset" ? _baseType :
+     ovBase == "SMA" ? 0 : ovBase == "EMA" ? 1 : ovBase == "WMA" ? 2 :
+     ovBase == "DEMA" ? 3 : ovBase == "TEMA" ? 4 : ovBase == "HullMA" ? 5 : _baseType
+
+int baseLen = ovBaseLen > 0 ? ovBaseLen : _baseLen
+
+int zWinRaw = ovZWin > 0 ? ovZWin : 0
+int zWin    = zWinRaw > 0 ? zWinRaw : baseLen
+
+int smoothType = ovSmooth == "Preset" ? _smoothType :
+     ovSmooth == "None" ? 0 : ovSmooth == "EMA" ? 1 : _smoothType
+
+int smoothLen = ovSmoothLen > 0 ? ovSmoothLen : (_smoothLen > 0 ? _smoothLen : 5)
+
+int srcType = ovSrc == "Preset" ? _srcType :
+     ovSrc == "close" ? 0 : ovSrc == "hlc3" ? 1 :
+     ovSrc == "hl2" ? 2 : ovSrc == "ohlc4" ? 3 : _srcType
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  SOURCE SELECTION
+// ══════════════════════════════════════════════════════════════════════════════
+
+float src = switch srcType
+    0 => close
+    1 => hlc3
+    2 => hl2
+    3 => ohlc4
+    => close
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  BASELINE CALCULATION  (6 types, all pre-computed)
+// ══════════════════════════════════════════════════════════════════════════════
+
+int bLen = math.max(baseLen, 2)
+
+// Manual EMA (ta.ema needs simple int, bLen is series int from switch decode)
+float _emaA = 2.0 / (bLen + 1)
+var float _ema = na
+_ema := na(_ema[1]) ? src : _emaA * src + (1 - _emaA) * _ema[1]
+
+// EMA of EMA for DEMA/TEMA
+var float _e2 = na
+_e2 := na(_e2[1]) ? _ema : _emaA * _ema + (1 - _emaA) * _e2[1]
+var float _e3 = na
+_e3 := na(_e3[1]) ? _e2 : _emaA * _e2 + (1 - _emaA) * _e3[1]
+
+float _sma  = ta.sma(src, bLen)
+float _wma  = ta.wma(src, bLen)
+float _dema = 2 * _ema - _e2
+float _tema = 3 * _ema - 3 * _e2 + _e3
+
+int   hLen  = math.max(math.round(bLen / 2), 1)
+int   sqLen = math.max(math.round(math.sqrt(bLen)), 1)
+float _hull = ta.wma(2 * ta.wma(src, hLen) - ta.wma(src, bLen), sqLen)
+
+float baseline = switch baseType
+    0 => _sma
+    1 => _ema
+    2 => _wma
+    3 => _dema
+    4 => _tema
+    5 => _hull
+    => _sma
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  Z-SCORE CALCULATION  (3 methods)
+// ══════════════════════════════════════════════════════════════════════════════
+
+int zw = math.max(zWin, 2)
+
+// Method 0: Standard Z-Score
+float resid0 = src - baseline
+float std0   = ta.stdev(src, zw)
+float z_std  = std0 != 0 ? resid0 / std0 : 0.0
+
+// Method 1: Percentage Deviation Z-Score
+float pctDev  = baseline != 0 ? (src - baseline) / baseline : 0.0
+float pctStd  = ta.stdev(pctDev, zw)
+float z_pct   = pctStd != 0 ? pctDev / pctStd : 0.0
+
+// Method 2: ATR Normalized
+float _tr    = na(close[1]) ? high - low : math.max(high - low, math.max(math.abs(high - close[1]), math.abs(low - close[1])))
+float _atrA  = 1.0 / zw
+var float atrVal = na
+atrVal := na(atrVal[1]) ? _tr : _atrA * _tr + (1 - _atrA) * atrVal[1]
+float resid2 = src - baseline
+float z_atr  = atrVal != 0 ? resid2 / atrVal : 0.0
+
+float rawZ = switch method
+    0 => z_std
+    1 => z_pct
+    2 => z_atr
+    => z_std
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  SMOOTHING  (None or EMA)
+// ══════════════════════════════════════════════════════════════════════════════
+
+int sLen = math.max(smoothLen, 2)
+
+// Manual EMA smooth (sLen is series int)
+float _smEmaA = 2.0 / (sLen + 1)
+var float _smEma = na
+_smEma := na(_smEma[1]) ? rawZ : _smEmaA * rawZ + (1 - _smEmaA) * _smEma[1]
+
+float smoothed = smoothType == 1 ? _smEma : rawZ
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  AUTO-FIT: Pearson R, Auto Gain/Bias, RMSE
+// ══════════════════════════════════════════════════════════════════════════════
+
+float _afMeanX = ta.sma(smoothed, corrWindow)
+float _afMeanY = ta.sma(origPlot, corrWindow)
+float _afCov   = ta.sma(smoothed * origPlot, corrWindow) - _afMeanX * _afMeanY
+float _afVarX  = ta.sma(smoothed * smoothed, corrWindow) - _afMeanX * _afMeanX
+float _afVarY  = ta.sma(origPlot * origPlot, corrWindow) - _afMeanY * _afMeanY
+float _afStdX  = math.sqrt(math.max(_afVarX, 0))
+float _afStdY  = math.sqrt(math.max(_afVarY, 0))
+
+float pearsonR = (_afStdX > 0 and _afStdY > 0) ? _afCov / (_afStdX * _afStdY) : 0.0
+float autoGain = _afVarX > 0.0001 ? _afCov / _afVarX : 1.0
+float autoBias = _afMeanY - autoGain * _afMeanX
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  FINAL OUTPUT
+// ══════════════════════════════════════════════════════════════════════════════
+
+float effGain = autoScale ? autoGain : gain
+float effBias = autoScale ? autoBias : bias
+float matchIt = smoothed * effGain + effBias
+
+// RMSE (after scaling)
+float _err = matchIt - origPlot
+float rmse = math.sqrt(ta.sma(_err * _err, corrWindow))
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  SIGNAL DOTS (Peak / Trough detection + Noise Suppression)
+// ══════════════════════════════════════════════════════════════════════════════
+
+bool rawPeak   = matchIt[1] > matchIt[2] and matchIt[1] > matchIt[0]
+bool rawTrough = matchIt[1] < matchIt[2] and matchIt[1] < matchIt[0]
+
+bool peakAbove   = rawPeak   and matchIt[1] > upperDotLvl
+bool troughBelow = rawTrough and matchIt[1] < lowerDotLvl
+
+bool showPeak   = peakAbove
+bool showTrough = troughBelow
+
+if noiseSup > 0 and peakAbove
+    for i = 2 to noiseSup + 1
+        if matchIt[i] > matchIt[1]
+            showPeak := false
+            break
+
+if noiseSup > 0 and troughBelow
+    for i = 2 to noiseSup + 1
+        if matchIt[i] < matchIt[1]
+            showTrough := false
+            break
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  PLOTTING
+// ══════════════════════════════════════════════════════════════════════════════
+
+plot(matchIt, "Match-It", color=color.rgb(33, 150, 243), linewidth=1)
+plot(showOrig ? origPlot : na, "Original", color=color.rgb(255, 193, 7), linewidth=1)
+
+plotshape(showPeak   ? matchIt[1] : na, "Peak Dot",   shape.circle, location.absolute, color.rgb(255, 82, 82),  size=size.tiny, offset=-1)
+plotshape(showTrough ? matchIt[1] : na, "Trough Dot", shape.circle, location.absolute, color.rgb(76, 175, 80),  size=size.tiny, offset=-1)
+
+hline(0.5,  "Upper 1", color=color.new(color.red, 60),   linestyle=hline.style_dashed)
+hline(0.25, "Upper 2", color=color.new(color.red, 80),   linestyle=hline.style_dashed)
+hline(-0.25,"Lower 2", color=color.new(color.green, 80), linestyle=hline.style_dashed)
+hline(-0.5, "Lower 1", color=color.new(color.green, 60), linestyle=hline.style_dashed)
+hline(0,    "Zero",    color=color.new(color.gray, 70),  linestyle=hline.style_dotted)
+
+// Data window
+plot(rawZ,     "RawZ",     display=display.data_window, color=color.new(color.white, 100))
+plot(baseline, "Baseline", display=display.data_window, color=color.new(color.white, 100))
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  SETTINGS + SCORING TABLE
+// ══════════════════════════════════════════════════════════════════════════════
+
+string methNames = switch method
+    0 => "StdZScore"
+    1 => "PctDev"
+    2 => "AtrNorm"
+    => "StdZScore"
+
+string baseNames = switch baseType
+    0 => "SMA"
+    1 => "EMA"
+    2 => "WMA"
+    3 => "DEMA"
+    4 => "TEMA"
+    5 => "HullMA"
+    => "SMA"
+
+string srcNames = switch srcType
+    0 => "close"
+    1 => "hlc3"
+    2 => "hl2"
+    3 => "ohlc4"
+    => "close"
+
+var tblPosVal = tblPos == "Top Left" ? position.top_left :
+     tblPos == "Top Right" ? position.top_right :
+     tblPos == "Bottom Left" ? position.bottom_left :
+     position.bottom_right
+
+var table settingsTbl = table.new(tblPosVal, 2, 14,
+     bgcolor=color.new(color.black, 30), border_width=1,
+     border_color=color.new(color.gray, 60), frame_width=1,
+     frame_color=color.new(color.gray, 40))
+
+if barstate.islast and showTable
+    table.cell(settingsTbl, 0, 0, "Preset",    text_color=color.gray,   text_size=size.small)
+    table.cell(settingsTbl, 1, 0, presetSel,   text_color=color.white,  text_size=size.small)
+    table.cell(settingsTbl, 0, 1, "Method",    text_color=color.gray,   text_size=size.small)
+    table.cell(settingsTbl, 1, 1, methNames,   text_color=color.yellow, text_size=size.small)
+    table.cell(settingsTbl, 0, 2, "Base MA",   text_color=color.gray,   text_size=size.small)
+    table.cell(settingsTbl, 1, 2, baseNames + "(" + str.tostring(baseLen) + ")", text_color=color.yellow, text_size=size.small)
+    table.cell(settingsTbl, 0, 3, "Z-Window",  text_color=color.gray,   text_size=size.small)
+    table.cell(settingsTbl, 1, 3, str.tostring(zWin), text_color=color.yellow, text_size=size.small)
+    table.cell(settingsTbl, 0, 4, "Smooth",    text_color=color.gray,   text_size=size.small)
+    table.cell(settingsTbl, 1, 4, smoothType == 1 ? "EMA(" + str.tostring(smoothLen) + ")" : "None", text_color=color.yellow, text_size=size.small)
+    table.cell(settingsTbl, 0, 5, "Source",    text_color=color.gray,   text_size=size.small)
+    table.cell(settingsTbl, 1, 5, srcNames,    text_color=color.yellow, text_size=size.small)
+    table.cell(settingsTbl, 0, 6, "Gain",      text_color=color.gray,   text_size=size.small)
+    table.cell(settingsTbl, 1, 6, str.tostring(effGain, "#.####"), text_color=color.yellow, text_size=size.small)
+    table.cell(settingsTbl, 0, 7, "Bias",      text_color=color.gray,   text_size=size.small)
+    table.cell(settingsTbl, 1, 7, str.tostring(effBias, "#.####"), text_color=color.yellow, text_size=size.small)
+    // Scoring
+    color rColor = pearsonR > 0.95 ? color.lime : pearsonR > 0.85 ? color.yellow : color.red
+    table.cell(settingsTbl, 0, 8, "",          text_color=color.gray,   text_size=size.small)
+    table.cell(settingsTbl, 1, 8, "",          text_size=size.small)
+    table.cell(settingsTbl, 0, 9, "Pearson R", text_color=color.gray,   text_size=size.small)
+    table.cell(settingsTbl, 1, 9, str.tostring(pearsonR, "#.####"), text_color=rColor, text_size=size.small)
+    table.cell(settingsTbl, 0, 10,"RMSE",      text_color=color.gray,   text_size=size.small)
+    table.cell(settingsTbl, 1, 10,str.tostring(rmse, "#.####"),     text_color=color.yellow, text_size=size.small)
+    table.cell(settingsTbl, 0, 11,"Auto Gain", text_color=color.gray,   text_size=size.small)
+    table.cell(settingsTbl, 1, 11,str.tostring(autoGain, "#.####"), text_color=autoScale ? color.lime : color.gray, text_size=size.small)
+    table.cell(settingsTbl, 0, 12,"Auto Bias", text_color=color.gray,   text_size=size.small)
+    table.cell(settingsTbl, 1, 12,str.tostring(autoBias, "#.####"), text_color=autoScale ? color.lime : color.gray, text_size=size.small)
+    table.cell(settingsTbl, 0, 13,"Noise Sup", text_color=color.gray,   text_size=size.small)
+    table.cell(settingsTbl, 1, 13,str.tostring(noiseSup),           text_color=color.yellow, text_size=size.small)
