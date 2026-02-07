@@ -1,0 +1,288 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0
+// © mean-reversion-v8 — Standalone Mean Reversion Oscillator (Data-Driven)
+
+//@version=6
+indicator("MR Mean-Reversion V8", shorttitle="MR-Rev V8", overlay=false, precision=4,
+     max_labels_count=1)
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  V8: DATA-DRIVEN ALGORITHM (from CSV reverse-engineering)
+//
+//  Key insight from Python analysis of 5 timeframes (Daily/8H/4H/1H/15M):
+//  → ONE universal algorithm works on ALL timeframes with NO period scaling.
+//  → Best universal config: WMA(50) + ATR normalization + EMA(9) smoothing.
+//  → Fixed gain/bias, amplitude naturally varies by timeframe.
+//  → ATR normalization clearly beats StdDev and Raw deviation.
+//
+//  Removed TF-adaptive period scaling from v7 (it was wrong).
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ── 1. SETTINGS ──────────────────────────────────────────────────────────────
+
+string tradingStyle = input.string("Neutral", "Trading Style",
+     options=["Very Aggressive","Aggressive","Neutral","Conservative","Very Conservative"],
+     tooltip="Controls signal dot sensitivity via threshold levels.",
+     group="1. SETTINGS")
+
+string srcInput = input.string("ohlc4", "Source",
+     options=["close","hlc3","hl2","ohlc4"],
+     group="1. SETTINGS")
+
+string baseMAType = input.string("WMA", "Baseline MA",
+     options=["SMA","EMA","WMA","DEMA","TEMA","HullMA"],
+     tooltip="WMA(50) identified as optimal baseline across all timeframes.",
+     group="1. SETTINGS")
+
+int baseLen = input.int(50, "Baseline Length", minval=2, maxval=500,
+     tooltip="Period for the baseline moving average. Fixed across all timeframes.",
+     group="1. SETTINGS")
+
+int atrPeriod = input.int(50, "ATR Period", minval=2, maxval=500,
+     tooltip="ATR normalization period. Fixed across all timeframes.",
+     group="1. SETTINGS")
+
+int smoothLen = input.int(9, "Smooth Length (0=none)", minval=0, maxval=100,
+     tooltip="EMA smoothing of the raw Z-score. 9 is optimal.",
+     group="1. SETTINGS")
+
+// ── 2. SCALING ───────────────────────────────────────────────────────────────
+
+float gain = input.float(0.3215, "Gain", minval=0.01, step=0.01,
+     tooltip="Amplitude multiplier. Calibrated on Daily TSLA (R=0.9919 with OHLC data).",
+     group="2. SCALING")
+
+float bias = input.float(0.0404, "Bias", step=0.01,
+     tooltip="Vertical offset. Calibrated on Daily TSLA.",
+     group="2. SCALING")
+
+// ── 3. SIGNALS & NOISE SUPPRESSION ──────────────────────────────────────────
+
+int noiseSup = input.int(30, "Noise Suppression", minval=0, maxval=50, step=10,
+     tooltip="Suppresses weaker signals within N bars of stronger ones. 0 = off.",
+     group="3. SIGNALS")
+
+// ── 4. DISPLAY ───────────────────────────────────────────────────────────────
+
+bool showTable = input.bool(true, "Show Settings Table", group="4. DISPLAY")
+string tblPos = input.string("Top Right", "Table Position",
+     options=["Top Left","Top Right","Bottom Left","Bottom Right"], group="4. DISPLAY")
+
+// ── 5. AUTO-FIT DIAGNOSTIC (optional) ────────────────────────────────────────
+
+bool  showAutoFit = input.bool(false, "Enable Auto-Fit Diagnostic", group="5. AUTO-FIT (optional)")
+float origPlot    = input.source(close, "Original Plot",
+     tooltip="Point this at the IA-Mean-Reversion plot for comparison.",
+     group="5. AUTO-FIT (optional)")
+int   corrWindow  = input.int(300, "Correlation Window", minval=50, maxval=5000, step=50,
+     group="5. AUTO-FIT (optional)")
+bool  showOrig    = input.bool(false, "Show Original Overlay", group="5. AUTO-FIT (optional)")
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  TRADING STYLE → threshold levels
+// ══════════════════════════════════════════════════════════════════════════════
+
+float upperDotLvl = switch tradingStyle
+    "Very Aggressive"   => 0.20
+    "Aggressive"        => 0.35
+    "Neutral"           => 0.50
+    "Conservative"      => 0.65
+    "Very Conservative" => 0.80
+    => 0.50
+
+float lowerDotLvl = -upperDotLvl
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  SOURCE
+// ══════════════════════════════════════════════════════════════════════════════
+
+float src = switch srcInput
+    "close" => close
+    "hlc3"  => hlc3
+    "hl2"   => hl2
+    "ohlc4" => ohlc4
+    => ohlc4
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  BASELINE CALCULATION
+// ══════════════════════════════════════════════════════════════════════════════
+
+int bLen = math.max(baseLen, 2)
+
+// Manual EMA for baseline (avoids series int issue with ta.ema)
+float _emaA = 2.0 / (bLen + 1)
+var float _ema = na
+_ema := na(_ema[1]) ? src : _emaA * src + (1 - _emaA) * _ema[1]
+
+// EMA of EMA for DEMA/TEMA
+var float _e2 = na
+_e2 := na(_e2[1]) ? _ema : _emaA * _ema + (1 - _emaA) * _e2[1]
+var float _e3 = na
+_e3 := na(_e3[1]) ? _e2 : _emaA * _e2 + (1 - _emaA) * _e3[1]
+
+float _sma  = ta.sma(src, bLen)
+float _wma  = ta.wma(src, bLen)
+float _dema = 2 * _ema - _e2
+float _tema = 3 * _ema - 3 * _e2 + _e3
+
+int   hLen  = math.max(math.round(bLen / 2), 1)
+int   sqLen = math.max(math.round(math.sqrt(bLen)), 1)
+float _hull = ta.wma(2 * ta.wma(src, hLen) - ta.wma(src, bLen), sqLen)
+
+float baseline = switch baseMAType
+    "SMA"    => _sma
+    "EMA"    => _ema
+    "WMA"    => _wma
+    "DEMA"   => _dema
+    "TEMA"   => _tema
+    "HullMA" => _hull
+    => _wma
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  ATR-NORMALIZED DEVIATION
+// ══════════════════════════════════════════════════════════════════════════════
+
+int aLen = math.max(atrPeriod, 2)
+
+// Manual ATR (RMA of true range) — avoids series int issue
+float _tr   = na(close[1]) ? high - low : math.max(high - low, math.max(math.abs(high - close[1]), math.abs(low - close[1])))
+float _atrA = 1.0 / aLen
+var float atrVal = na
+atrVal := na(atrVal[1]) ? _tr : _atrA * _tr + (1 - _atrA) * atrVal[1]
+
+float deviation = src - baseline
+float rawZ = atrVal != 0 ? deviation / atrVal : 0.0
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  EMA SMOOTHING
+// ══════════════════════════════════════════════════════════════════════════════
+
+int sLen = math.max(smoothLen, 2)
+float _smEmaA = 2.0 / (sLen + 1)
+var float _smEma = na
+_smEma := na(_smEma[1]) ? rawZ : _smEmaA * rawZ + (1 - _smEmaA) * _smEma[1]
+
+float smoothed = smoothLen > 0 ? _smEma : rawZ
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  FINAL OUTPUT
+// ══════════════════════════════════════════════════════════════════════════════
+
+float oscillator = smoothed * gain + bias
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  AUTO-FIT DIAGNOSTIC (optional)
+// ══════════════════════════════════════════════════════════════════════════════
+
+float pearsonR = 0.0
+float autoGain = gain
+float autoBias = bias
+float rmse     = 0.0
+
+if showAutoFit
+    float _afMeanX = ta.sma(smoothed, corrWindow)
+    float _afMeanY = ta.sma(origPlot, corrWindow)
+    float _afCov   = ta.sma(smoothed * origPlot, corrWindow) - _afMeanX * _afMeanY
+    float _afVarX  = ta.sma(smoothed * smoothed, corrWindow) - _afMeanX * _afMeanX
+    float _afVarY  = ta.sma(origPlot * origPlot, corrWindow) - _afMeanY * _afMeanY
+    float _afStdX  = math.sqrt(math.max(_afVarX, 0))
+    float _afStdY  = math.sqrt(math.max(_afVarY, 0))
+    pearsonR := (_afStdX > 0 and _afStdY > 0) ? _afCov / (_afStdX * _afStdY) : 0.0
+    autoGain := _afVarX > 0.0001 ? _afCov / _afVarX : 1.0
+    autoBias := _afMeanY - autoGain * _afMeanX
+    float _err = oscillator - origPlot
+    rmse := math.sqrt(ta.sma(_err * _err, corrWindow))
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  SIGNAL DOTS (Peak / Trough + Noise Suppression)
+// ══════════════════════════════════════════════════════════════════════════════
+
+bool rawPeak   = oscillator[1] > oscillator[2] and oscillator[1] > oscillator[0]
+bool rawTrough = oscillator[1] < oscillator[2] and oscillator[1] < oscillator[0]
+
+bool peakAbove   = rawPeak   and oscillator[1] > upperDotLvl
+bool troughBelow = rawTrough and oscillator[1] < lowerDotLvl
+
+bool showPeak   = peakAbove
+bool showTrough = troughBelow
+
+if noiseSup > 0 and peakAbove
+    for i = 2 to noiseSup + 1
+        if oscillator[i] > oscillator[1]
+            showPeak := false
+            break
+
+if noiseSup > 0 and troughBelow
+    for i = 2 to noiseSup + 1
+        if oscillator[i] < oscillator[1]
+            showTrough := false
+            break
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  PLOTTING
+// ══════════════════════════════════════════════════════════════════════════════
+
+plot(oscillator, "Oscillator", color=color.rgb(33, 150, 243), linewidth=2)
+plot(showAutoFit and showOrig ? origPlot : na, "Original", color=color.rgb(255, 193, 7), linewidth=1)
+
+plotshape(showPeak   ? oscillator[1] : na, "Sell Signal",  shape.circle, location.absolute, color.rgb(255, 82, 82),  size=size.tiny, offset=-1)
+plotshape(showTrough ? oscillator[1] : na, "Buy Signal",   shape.circle, location.absolute, color.rgb(76, 175, 80),  size=size.tiny, offset=-1)
+
+h_upper1 = hline(0.5,  "Upper 1",  color=color.new(color.red, 60),   linestyle=hline.style_dashed)
+h_upper2 = hline(0.25, "Upper 2",  color=color.new(color.red, 80),   linestyle=hline.style_dashed)
+h_lower2 = hline(-0.25,"Lower 2",  color=color.new(color.green, 80), linestyle=hline.style_dashed)
+h_lower1 = hline(-0.5, "Lower 1",  color=color.new(color.green, 60), linestyle=hline.style_dashed)
+h_zero   = hline(0,    "Zero",     color=color.new(color.gray, 70),  linestyle=hline.style_dotted)
+
+fill(h_upper2, h_upper1, color=color.new(color.red, 85))
+fill(h_lower1, h_lower2, color=color.new(color.green, 85))
+
+// Data window
+plot(rawZ,      "Raw Z",     display=display.data_window, color=color.new(color.white, 100))
+plot(smoothed,  "Smoothed",  display=display.data_window, color=color.new(color.white, 100))
+plot(baseline,  "Baseline",  display=display.data_window, color=color.new(color.white, 100))
+plot(atrVal,    "ATR",       display=display.data_window, color=color.new(color.white, 100))
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  SETTINGS TABLE
+// ══════════════════════════════════════════════════════════════════════════════
+
+var tblPosVal = tblPos == "Top Left" ? position.top_left :
+     tblPos == "Top Right" ? position.top_right :
+     tblPos == "Bottom Left" ? position.bottom_left :
+     position.bottom_right
+
+var table settingsTbl = table.new(tblPosVal, 2, 14,
+     bgcolor=color.new(color.black, 30), border_width=1,
+     border_color=color.new(color.gray, 60), frame_width=1,
+     frame_color=color.new(color.gray, 40))
+
+if barstate.islast and showTable
+    table.cell(settingsTbl, 0, 0, "Style",      text_color=color.gray,   text_size=size.small)
+    table.cell(settingsTbl, 1, 0, tradingStyle,  text_color=color.white,  text_size=size.small)
+    table.cell(settingsTbl, 0, 1, "Base MA",     text_color=color.gray,   text_size=size.small)
+    table.cell(settingsTbl, 1, 1, baseMAType + "(" + str.tostring(baseLen) + ")", text_color=color.yellow, text_size=size.small)
+    table.cell(settingsTbl, 0, 2, "ATR Period",  text_color=color.gray,   text_size=size.small)
+    table.cell(settingsTbl, 1, 2, str.tostring(atrPeriod), text_color=color.yellow, text_size=size.small)
+    table.cell(settingsTbl, 0, 3, "Smooth",      text_color=color.gray,   text_size=size.small)
+    table.cell(settingsTbl, 1, 3, smoothLen > 0 ? "EMA(" + str.tostring(smoothLen) + ")" : "None", text_color=color.yellow, text_size=size.small)
+    table.cell(settingsTbl, 0, 4, "Source",      text_color=color.gray,   text_size=size.small)
+    table.cell(settingsTbl, 1, 4, srcInput,      text_color=color.yellow, text_size=size.small)
+    table.cell(settingsTbl, 0, 5, "Gain",        text_color=color.gray,   text_size=size.small)
+    table.cell(settingsTbl, 1, 5, str.tostring(gain, "#.####"), text_color=color.yellow, text_size=size.small)
+    table.cell(settingsTbl, 0, 6, "Bias",        text_color=color.gray,   text_size=size.small)
+    table.cell(settingsTbl, 1, 6, str.tostring(bias, "#.####"), text_color=color.yellow, text_size=size.small)
+    table.cell(settingsTbl, 0, 7, "Noise Sup",   text_color=color.gray,   text_size=size.small)
+    table.cell(settingsTbl, 1, 7, str.tostring(noiseSup), text_color=color.yellow, text_size=size.small)
+
+    if showAutoFit
+        color rColor = pearsonR > 0.95 ? color.lime : pearsonR > 0.85 ? color.yellow : color.red
+        table.cell(settingsTbl, 0, 8, "",            text_size=size.small)
+        table.cell(settingsTbl, 1, 8, "",            text_size=size.small)
+        table.cell(settingsTbl, 0, 9, "Pearson R",   text_color=color.gray, text_size=size.small)
+        table.cell(settingsTbl, 1, 9, str.tostring(pearsonR, "#.####"), text_color=rColor, text_size=size.small)
+        table.cell(settingsTbl, 0, 10,"RMSE",        text_color=color.gray, text_size=size.small)
+        table.cell(settingsTbl, 1, 10,str.tostring(rmse, "#.####"), text_color=color.yellow, text_size=size.small)
+        table.cell(settingsTbl, 0, 11,"Sug. Gain",   text_color=color.gray, text_size=size.small)
+        table.cell(settingsTbl, 1, 11,str.tostring(autoGain, "#.####"), text_color=color.lime, text_size=size.small)
+        table.cell(settingsTbl, 0, 12,"Sug. Bias",   text_color=color.gray, text_size=size.small)
+        table.cell(settingsTbl, 1, 12,str.tostring(autoBias, "#.####"), text_color=color.lime, text_size=size.small)
