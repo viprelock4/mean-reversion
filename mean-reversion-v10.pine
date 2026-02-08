@@ -36,10 +36,10 @@ int lineWidth = input.int(1, "", minval=1, maxval=4,
 string showBTStr = input.string("False", "Show Backtest",
      options=["True","False"], group="BACKTEST DISPLAY")
 
-int btStartTime = input.time(timestamp(2018, 12, 31, 16, 0), "Start Date",
+int btStartTime = input.time(timestamp("2019-01-01"), "Start Date",
      group="BACKTEST DISPLAY")
 
-int btEndTime = input.time(timestamp(2028, 12, 31, 16, 0), "End Date",
+int btEndTime = input.time(timestamp("2029-01-01"), "End Date",
      group="BACKTEST DISPLAY")
 
 string btTextSize = input.string("Medium", "Table Text",
