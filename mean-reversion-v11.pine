@@ -1,0 +1,357 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0
+// © mean-reversion-v11 — Standalone Mean Reversion Oscillator
+
+//@version=6
+indicator("MR Mean-Reversion V11", shorttitle="MR-Rev11", overlay=false, precision=4,
+     max_labels_count=500)
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  V10: EXACT CLONE — Fixed horizontal bands, all settings matching original
+//
+//  Core: WMA(50) on ohlc4, ATR(50)-normalized, EMA(9) smoothed
+//  Gain=0.3215, Bias=0.0404 (calibrated on TSLA Daily, R=0.9919)
+//  Bands: Fixed hlines driven by Trading Style with red/green fills
+//  Dots: Turn detection + noise suppression
+//  Backtest: Full engine with fees, FIFO/LIFO/% Holdings exit types
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ── MEAN REVERT SETTINGS ──────────────────────────────────────────────────────
+
+string tradingStyle = input.string("neutral", "Trading Style",
+     options=["very aggressive","aggressive","neutral","conservative","very conservative"],
+     group="MEAN REVERT SETTINGS")
+
+int noiseSup = input.int(30, "Noise Suppression", minval=0, maxval=50, step=10,
+     tooltip="Suppresses less optimal signals if there exists stronger ones within specified number of bars.",
+     group="MEAN REVERT SETTINGS")
+
+color lineCol = input.color(color.rgb(33, 150, 243), "Line Style",
+     inline="linestyle", group="MEAN REVERT SETTINGS")
+
+int lineWidth = input.int(1, "", minval=1, maxval=4,
+     inline="linestyle", group="MEAN REVERT SETTINGS")
+
+// ── BACKTEST DISPLAY ──────────────────────────────────────────────────────────
+
+string showBTStr = input.string("False", "Show Backtest",
+     options=["True","False"], group="BACKTEST DISPLAY")
+
+int btStartTime = input.time(timestamp("2019-01-01"), "Start Date",
+     group="BACKTEST DISPLAY")
+
+int btEndTime = input.time(timestamp("2029-01-01"), "End Date",
+     group="BACKTEST DISPLAY")
+
+string btTextSize = input.string("Medium", "Table Text",
+     options=["Small","Medium","Large"], inline="tabletext", group="BACKTEST DISPLAY")
+string btTextLen = input.string("Short", "",
+     options=["Short","Full"], inline="tabletext", group="BACKTEST DISPLAY")
+
+string btTblPos = input.string("Bottom Center", "Table Pos.",
+     options=["Top Left","Top Right","Bottom Left","Bottom Right","Bottom Center","Top Center"],
+     inline="tablepos", group="BACKTEST DISPLAY")
+string btTblLayout = input.string("Horizontal", "",
+     options=["Horizontal","Vertical"], inline="tablepos", group="BACKTEST DISPLAY")
+
+// ── BACKTEST SETTINGS ─────────────────────────────────────────────────────────
+
+float btCapital = input.float(100000, "Initial Capital", minval=1000, step=1000,
+     tooltip="Starting capital for backtest.", group="BACKTEST SETTINGS")
+
+string btTrigger = input.string("Bar Open", "Order Trigger",
+     options=["Bar Open","Bar Close"], group="BACKTEST SETTINGS")
+
+string btEntryType = input.string("% Current Capital", "Entry Type",
+     options=["% Current Capital","% Initial Capital","Fixed Amount"],
+     inline="entrytype", group="BACKTEST SETTINGS")
+float btEntryVal = input.float(10, "", minval=0.1, step=1,
+     inline="entrytype",
+     tooltip="Percent or fixed amount depending on what you selected for Entry Type.",
+     group="BACKTEST SETTINGS")
+
+string btEntryFeeType = input.string("Percentage", "Entry Fee",
+     options=["Percentage","Fixed"], inline="entryfee", group="BACKTEST SETTINGS")
+float btEntryFee = input.float(0, "", minval=0, step=0.1,
+     inline="entryfee", group="BACKTEST SETTINGS")
+
+string btExitType = input.string("FIFO", "Exit Type",
+     options=["FIFO","LIFO","% Holdings"],
+     inline="exittype", group="BACKTEST SETTINGS")
+float btExitVal = input.float(10, "", minval=0.1, step=1,
+     inline="exittype",
+     tooltip="As a percentage. Note: This only applies to % Holdings. FIFO/LIFO will automatically sell the # of shares first/last purchased.",
+     group="BACKTEST SETTINGS")
+
+string btExitFeeType = input.string("Percentage", "Exit Fee",
+     options=["Percentage","Fixed"], inline="exitfee", group="BACKTEST SETTINGS")
+float btExitFee = input.float(0, "", minval=0, step=0.1,
+     inline="exitfee", group="BACKTEST SETTINGS")
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  DERIVED SETTINGS
+// ══════════════════════════════════════════════════════════════════════════════
+
+bool showBacktest = showBTStr == "True"
+
+// Trading style → band levels (controls hlines AND signal threshold)
+float outerUpper = switch tradingStyle
+    "very aggressive"   => 0.4
+    "aggressive"        => 0.4
+    "neutral"           => 0.5
+    "conservative"      => 0.6
+    "very conservative" => 0.6
+    => 0.5
+
+float innerUpper = switch tradingStyle
+    "very aggressive"   => 0.15
+    "aggressive"        => 0.2
+    "neutral"           => 0.25
+    "conservative"      => 0.3
+    "very conservative" => 0.35
+    => 0.25
+
+float innerLower = switch tradingStyle
+    "very aggressive"   => -0.15
+    "aggressive"        => -0.2
+    "neutral"           => -0.25
+    "conservative"      => -0.3
+    "very conservative" => -0.35
+    => -0.25
+
+float outerLower = switch tradingStyle
+    "very aggressive"   => -0.4
+    "aggressive"        => -0.4
+    "neutral"           => -0.5
+    "conservative"      => -0.6
+    "very conservative" => -0.6
+    => -0.5
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  CORE ALGORITHM — Fixed calibrated parameters
+// ══════════════════════════════════════════════════════════════════════════════
+
+float src = ohlc4
+
+// WMA(50) baseline
+float baseline = ta.wma(src, 50)
+
+// ATR(50) — manual RMA to avoid series int issue
+float _tr = na(close[1]) ? high - low :
+     math.max(high - low, math.max(math.abs(high - close[1]), math.abs(low - close[1])))
+float _atrAlpha = 1.0 / 50
+var float atrVal = na
+atrVal := na(atrVal[1]) ? _tr : _atrAlpha * _tr + (1 - _atrAlpha) * atrVal[1]
+
+// ATR-normalized deviation
+float rawZ = atrVal != 0 ? (src - baseline) / atrVal : 0.0
+
+// EMA(9) smoothing — manual to avoid series int issue
+float _smAlpha = 2.0 / (9 + 1)
+var float smoothed = na
+smoothed := na(smoothed[1]) ? rawZ : _smAlpha * rawZ + (1 - _smAlpha) * smoothed[1]
+
+// Final oscillator: Gain * smoothed + Bias
+float oscillator = smoothed * 0.3215 + 0.0404
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  SIGNAL DOTS — Turn detection with noise suppression
+// ══════════════════════════════════════════════════════════════════════════════
+
+bool turnDown = oscillator < oscillator[1]
+bool turnUp   = oscillator > oscillator[1]
+
+bool sellSignal = turnDown and oscillator[1] > innerUpper
+bool buySignal  = turnUp   and oscillator[1] < innerLower
+
+// Noise suppression: only fire if oscillator[1] is the highest/lowest in N bars
+if noiseSup > 0 and sellSignal
+    for i = 2 to noiseSup + 1
+        if oscillator[i] > oscillator[1]
+            sellSignal := false
+            break
+
+if noiseSup > 0 and buySignal
+    for i = 2 to noiseSup + 1
+        if oscillator[i] < oscillator[1]
+            buySignal := false
+            break
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  BACKTEST ENGINE
+// ══════════════════════════════════════════════════════════════════════════════
+
+bool inBtWindow = time >= btStartTime and time <= btEndTime
+
+var float btCash     = btCapital
+var float btShares   = 0.0
+var float btEntryPx  = 0.0
+var int   btBuys     = 0
+var int   btSells    = 0
+var int   btWins     = 0
+var int   btLosses   = 0
+var float btTotalPnL = 0.0
+
+float execPrice = btTrigger == "Bar Open" ? open : close
+
+if showBacktest and inBtWindow
+    // BUY signal → open long position
+    if buySignal and btShares == 0.0
+        float allocAmount = switch btEntryType
+            "% Current Capital" => btCash * (btEntryVal / 100.0)
+            "% Initial Capital" => btCapital * (btEntryVal / 100.0)
+            "Fixed Amount"      => btEntryVal
+            => btCash * (btEntryVal / 100.0)
+        allocAmount := math.min(allocAmount, btCash)
+        // Apply entry fee
+        float entryFeeAmt = btEntryFeeType == "Percentage" ?
+             allocAmount * (btEntryFee / 100.0) : btEntryFee
+        allocAmount -= entryFeeAmt
+        if allocAmount > 0 and execPrice > 0
+            btShares   := allocAmount / execPrice
+            btEntryPx  := execPrice
+            btCash     -= (allocAmount + entryFeeAmt)
+            btBuys     += 1
+
+    // SELL signal → close position
+    if sellSignal and btShares > 0.0
+        // FIFO/LIFO sell all shares; % Holdings sells a percentage
+        float sellShares = btExitType == "% Holdings" ?
+             btShares * (btExitVal / 100.0) : btShares
+        float exitValue = sellShares * execPrice
+        // Apply exit fee
+        float exitFeeAmt = btExitFeeType == "Percentage" ?
+             exitValue * (btExitFee / 100.0) : btExitFee
+        exitValue -= exitFeeAmt
+        float pnl = exitValue - (sellShares * btEntryPx)
+        btCash     += exitValue
+        btTotalPnL += pnl
+        btSells    += 1
+        if pnl > 0
+            btWins += 1
+        else
+            btLosses += 1
+        btShares -= sellShares
+        if btShares < 0.0001
+            btShares  := 0.0
+            btEntryPx := 0.0
+
+float btPortfolioValue = btCash + btShares * close
+float btProfit = btPortfolioValue - btCapital
+float btROI = btCapital > 0 ? (btProfit / btCapital) * 100.0 : 0.0
+int btTotalTrades = btWins + btLosses
+float btWinPct = btTotalTrades > 0 ?
+     (float(btWins) / float(btTotalTrades)) * 100.0 : 0.0
+int btOpenPos = btShares > 0 ? 1 : 0
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  PLOTTING
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Oscillator line
+plot(oscillator, "Plot", color=lineCol, linewidth=lineWidth)
+
+// Signal dots
+plotshape(sellSignal ? oscillator : na, "Shapes", shape.circle, location.absolute,
+     color.rgb(255, 82, 82), size=size.tiny)
+plotshape(buySignal ? oscillator : na, "Shapes", shape.circle, location.absolute,
+     color.rgb(76, 175, 80), size=size.tiny)
+
+// Fixed horizontal bands — levels change with Trading Style
+h_upper1 = hline(outerUpper, "Level", color=color.new(color.gray, 40), linestyle=hline.style_dashed)
+h_upper2 = hline(innerUpper, "Level", color=color.new(color.gray, 40), linestyle=hline.style_dashed)
+h_lower2 = hline(innerLower, "Level", color=color.new(color.gray, 40), linestyle=hline.style_dashed)
+h_lower1 = hline(outerLower, "Level", color=color.new(color.gray, 40), linestyle=hline.style_dashed)
+
+// Red fill between upper bands, green fill between lower bands
+fill(h_upper2, h_upper1, color=color.new(color.red,   80), title="Upper Band Fill")
+fill(h_lower1, h_lower2, color=color.new(color.green, 80), title="Lower Band Fill")
+
+// Data window exports (hidden from chart)
+plot(rawZ,      "Raw Z",     display=display.data_window, color=color.new(color.white, 100))
+plot(smoothed,  "Smoothed",  display=display.data_window, color=color.new(color.white, 100))
+plot(baseline,  "Baseline",  display=display.data_window, color=color.new(color.white, 100))
+plot(atrVal,    "ATR",       display=display.data_window, color=color.new(color.white, 100))
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  BACKTEST RESULTS TABLE
+// ══════════════════════════════════════════════════════════════════════════════
+
+if barstate.islast and showBacktest
+    var tblPosVal = btTblPos == "Top Left" ? position.top_left :
+         btTblPos == "Top Right" ? position.top_right :
+         btTblPos == "Bottom Left" ? position.bottom_left :
+         btTblPos == "Bottom Right" ? position.bottom_right :
+         btTblPos == "Bottom Center" ? position.bottom_center :
+         position.top_center
+
+    var txtSz = btTextSize == "Small" ? size.small :
+         btTextSize == "Large" ? size.large : size.normal
+
+    color profitColor = btProfit >= 0 ? color.rgb(76, 175, 80) : color.rgb(255, 82, 82)
+
+    if btTblLayout == "Horizontal"
+        var table btTbl = table.new(tblPosVal, 9, 2,
+             bgcolor=color.new(color.black, 20), border_width=1,
+             border_color=color.new(color.gray, 60))
+
+        table.cell(btTbl, 0, 0, "Mean-BT",  text_color=color.gray, text_size=txtSz)
+        table.cell(btTbl, 1, 0, "Profit",   text_color=color.gray, text_size=txtSz)
+        table.cell(btTbl, 2, 0, "ROI",      text_color=color.gray, text_size=txtSz)
+        table.cell(btTbl, 3, 0, "Win%",     text_color=color.gray, text_size=txtSz)
+        table.cell(btTbl, 4, 0, "Buys",     text_color=color.gray, text_size=txtSz)
+        table.cell(btTbl, 5, 0, "Sells",    text_color=color.gray, text_size=txtSz)
+        table.cell(btTbl, 6, 0, "Open",     text_color=color.gray, text_size=txtSz)
+        table.cell(btTbl, 7, 0, "Capital",  text_color=color.gray, text_size=txtSz)
+        table.cell(btTbl, 8, 0, "Total",    text_color=color.gray, text_size=txtSz)
+
+        table.cell(btTbl, 0, 1, "Results",
+             text_color=color.white, text_size=txtSz)
+        table.cell(btTbl, 1, 1, str.format("{0,number,#,###}", math.round(btProfit)),
+             text_color=profitColor, text_size=txtSz)
+        table.cell(btTbl, 2, 1, str.tostring(btROI, "#.##") + "%",
+             text_color=profitColor, text_size=txtSz)
+        table.cell(btTbl, 3, 1, str.tostring(btWinPct, "#.##") + "%",
+             text_color=btWinPct >= 50 ? color.rgb(76, 175, 80) : color.rgb(255, 82, 82),
+             text_size=txtSz)
+        table.cell(btTbl, 4, 1, str.tostring(btBuys),
+             text_color=color.white, text_size=txtSz)
+        table.cell(btTbl, 5, 1, str.tostring(btSells),
+             text_color=color.white, text_size=txtSz)
+        table.cell(btTbl, 6, 1, str.tostring(btOpenPos),
+             text_color=color.white, text_size=txtSz)
+        table.cell(btTbl, 7, 1, str.format("{0,number,#,###}", math.round(btCash)),
+             text_color=color.white, text_size=txtSz)
+        table.cell(btTbl, 8, 1, str.format("{0,number,#,###}", math.round(btPortfolioValue)),
+             text_color=profitColor, text_size=txtSz)
+    else
+        var table btTbl = table.new(tblPosVal, 2, 9,
+             bgcolor=color.new(color.black, 20), border_width=1,
+             border_color=color.new(color.gray, 60))
+
+        table.cell(btTbl, 0, 0, "Mean-BT",  text_color=color.gray, text_size=txtSz)
+        table.cell(btTbl, 1, 0, "Results",   text_color=color.white, text_size=txtSz)
+        table.cell(btTbl, 0, 1, "Profit",    text_color=color.gray, text_size=txtSz)
+        table.cell(btTbl, 1, 1, str.format("{0,number,#,###}", math.round(btProfit)),
+             text_color=profitColor, text_size=txtSz)
+        table.cell(btTbl, 0, 2, "ROI",       text_color=color.gray, text_size=txtSz)
+        table.cell(btTbl, 1, 2, str.tostring(btROI, "#.##") + "%",
+             text_color=profitColor, text_size=txtSz)
+        table.cell(btTbl, 0, 3, "Win%",      text_color=color.gray, text_size=txtSz)
+        table.cell(btTbl, 1, 3, str.tostring(btWinPct, "#.##") + "%",
+             text_color=btWinPct >= 50 ? color.rgb(76, 175, 80) : color.rgb(255, 82, 82),
+             text_size=txtSz)
+        table.cell(btTbl, 0, 4, "Buys",      text_color=color.gray, text_size=txtSz)
+        table.cell(btTbl, 1, 4, str.tostring(btBuys),
+             text_color=color.white, text_size=txtSz)
+        table.cell(btTbl, 0, 5, "Sells",     text_color=color.gray, text_size=txtSz)
+        table.cell(btTbl, 1, 5, str.tostring(btSells),
+             text_color=color.white, text_size=txtSz)
+        table.cell(btTbl, 0, 6, "Open",      text_color=color.gray, text_size=txtSz)
+        table.cell(btTbl, 1, 6, str.tostring(btOpenPos),
+             text_color=color.white, text_size=txtSz)
+        table.cell(btTbl, 0, 7, "Capital",   text_color=color.gray, text_size=txtSz)
+        table.cell(btTbl, 1, 7, str.format("{0,number,#,###}", math.round(btCash)),
+             text_color=color.white, text_size=txtSz)
+        table.cell(btTbl, 0, 8, "Total",     text_color=color.gray, text_size=txtSz)
+        table.cell(btTbl, 1, 8, str.format("{0,number,#,###}", math.round(btPortfolioValue)),
+             text_color=profitColor, text_size=txtSz)
