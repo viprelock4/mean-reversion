@@ -1,0 +1,469 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0
+// © mean-reversion-v9 — Standalone Mean Reversion Oscillator
+
+//@version=6
+indicator("MR Mean-Reversion V9", shorttitle="MR-Rev V9", overlay=false, precision=4,
+     max_labels_count=500)
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  V9: FULL FEATURE CLONE
+//
+//  Core algorithm: WMA baseline, ATR-normalized deviation, EMA smoothing.
+//  New in V9:
+//    - Dynamic stdev bands (red/green shading)
+//    - Corrected signal dot logic (turn detection, not strict peak)
+//    - Auto-scale amplitude across timeframes
+//    - Backtest engine with trade tracking and PnL table
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ── 1. MEAN REVERT SETTINGS ─────────────────────────────────────────────────
+
+string tradingStyle = input.string("Neutral", "Trading Style",
+     options=["Very Aggressive","Aggressive","Neutral","Conservative","Very Conservative"],
+     tooltip="Controls signal dot sensitivity.",
+     group="1. MEAN REVERT SETTINGS")
+
+int noiseSup = input.int(30, "Noise Suppression", minval=0, maxval=50, step=10,
+     tooltip="Suppresses weaker signals within N bars of stronger ones. 0 = off.",
+     group="1. MEAN REVERT SETTINGS")
+
+string lineColor = input.string("Blue", "Line Style",
+     options=["Blue","Red","Green","White","Yellow"],
+     group="1. MEAN REVERT SETTINGS")
+
+int lineWidth = input.int(1, "", minval=1, maxval=4, inline="line_style",
+     group="1. MEAN REVERT SETTINGS")
+
+// ── 2. BACKTEST DISPLAY ─────────────────────────────────────────────────────
+
+bool showBacktest = input.bool(false, "Show Backtest",
+     group="2. BACKTEST DISPLAY")
+
+int btStartYear  = input.int(2018, "Start Year", minval=2000, maxval=2030, group="2. BACKTEST DISPLAY")
+int btStartMonth = input.int(12, "Start Month", minval=1, maxval=12, group="2. BACKTEST DISPLAY")
+int btStartDay   = input.int(31, "Start Day", minval=1, maxval=31, group="2. BACKTEST DISPLAY")
+int btEndYear    = input.int(2028, "End Year", minval=2000, maxval=2040, group="2. BACKTEST DISPLAY")
+int btEndMonth   = input.int(12, "End Month", minval=1, maxval=12, group="2. BACKTEST DISPLAY")
+int btEndDay     = input.int(31, "End Day", minval=1, maxval=31, group="2. BACKTEST DISPLAY")
+
+string btTextSize = input.string("Medium", "Table Text",
+     options=["Small","Medium","Large"], group="2. BACKTEST DISPLAY")
+string btTextLen  = input.string("Short", "Table Length",
+     options=["Short","Full"], group="2. BACKTEST DISPLAY")
+string btTblPos   = input.string("Bottom Center", "Table Pos.",
+     options=["Top Left","Top Right","Bottom Left","Bottom Right","Bottom Center","Top Center"],
+     group="2. BACKTEST DISPLAY")
+string btTblLayout = input.string("Horizontal", "Table Layout",
+     options=["Horizontal","Vertical"], group="2. BACKTEST DISPLAY")
+
+// ── 3. BACKTEST SETTINGS ────────────────────────────────────────────────────
+
+float btCapital   = input.float(100000, "Initial Capital", minval=1000, step=1000,
+     tooltip="Starting capital for backtest.", group="3. BACKTEST SETTINGS")
+
+string btTrigger  = input.string("Bar Open", "Order Trigger",
+     options=["Bar Open","Bar Close"], group="3. BACKTEST SETTINGS")
+
+string btEntryType = input.string("% Current Capital", "Entry Type",
+     options=["% Current Capital","% Initial Capital","Fixed Amount"],
+     group="3. BACKTEST SETTINGS")
+
+float btEntryPct   = input.float(10, "Entry %/Amount", minval=0.1, step=1,
+     tooltip="Percentage of capital or fixed dollar amount per trade.",
+     group="3. BACKTEST SETTINGS")
+
+// ── 4. ADVANCED (hidden defaults) ───────────────────────────────────────────
+
+string srcInput   = input.string("ohlc4", "Source",
+     options=["close","hlc3","hl2","ohlc4"], group="4. ADVANCED")
+
+string baseMAType = input.string("WMA", "Baseline MA",
+     options=["SMA","EMA","WMA","DEMA","TEMA","HullMA"], group="4. ADVANCED")
+
+int baseLen       = input.int(50, "Baseline Length", minval=2, maxval=500, group="4. ADVANCED")
+int atrPeriod     = input.int(50, "ATR Period", minval=2, maxval=500, group="4. ADVANCED")
+int smoothLen     = input.int(9, "Smooth Length (0=none)", minval=0, maxval=100, group="4. ADVANCED")
+
+float gain        = input.float(0.3215, "Gain", minval=0.001, step=0.01, group="4. ADVANCED")
+float bias        = input.float(0.0404, "Bias", step=0.01, group="4. ADVANCED")
+
+int bandLen       = input.int(100, "Band Stdev Length", minval=10, maxval=500,
+     tooltip="Rolling window for standard deviation bands.", group="4. ADVANCED")
+
+// ── 5. AUTO-FIT DIAGNOSTIC (optional) ────────────────────────────────────────
+
+bool  showAutoFit = input.bool(false, "Enable Auto-Fit Diagnostic", group="5. AUTO-FIT (optional)")
+float origPlot    = input.source(close, "Original Plot", group="5. AUTO-FIT (optional)")
+int   corrWindow  = input.int(300, "Correlation Window", minval=50, maxval=5000, step=50, group="5. AUTO-FIT (optional)")
+bool  showOrig    = input.bool(false, "Show Original Overlay", group="5. AUTO-FIT (optional)")
+bool  showTable   = input.bool(false, "Show Settings Table", group="5. AUTO-FIT (optional)")
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  TRADING STYLE → threshold multiplier for signal dots
+//  Thresholds are relative to the dynamic bands
+// ══════════════════════════════════════════════════════════════════════════════
+
+float styleMult = switch tradingStyle
+    "Very Aggressive"   => 0.40
+    "Aggressive"        => 0.60
+    "Neutral"           => 0.80
+    "Conservative"      => 1.00
+    "Very Conservative" => 1.20
+    => 0.80
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  SOURCE
+// ══════════════════════════════════════════════════════════════════════════════
+
+float src = switch srcInput
+    "close" => close
+    "hlc3"  => hlc3
+    "hl2"   => hl2
+    "ohlc4" => ohlc4
+    => ohlc4
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  BASELINE CALCULATION
+// ══════════════════════════════════════════════════════════════════════════════
+
+int bLen = math.max(baseLen, 2)
+
+float _emaA = 2.0 / (bLen + 1)
+var float _ema = na
+_ema := na(_ema[1]) ? src : _emaA * src + (1 - _emaA) * _ema[1]
+
+var float _e2 = na
+_e2 := na(_e2[1]) ? _ema : _emaA * _ema + (1 - _emaA) * _e2[1]
+var float _e3 = na
+_e3 := na(_e3[1]) ? _e2 : _emaA * _e2 + (1 - _emaA) * _e3[1]
+
+float _sma  = ta.sma(src, bLen)
+float _wma  = ta.wma(src, bLen)
+float _dema = 2 * _ema - _e2
+float _tema = 3 * _ema - 3 * _e2 + _e3
+
+int   hLen  = math.max(math.round(bLen / 2), 1)
+int   sqLen = math.max(math.round(math.sqrt(bLen)), 1)
+float _hull = ta.wma(2 * ta.wma(src, hLen) - ta.wma(src, bLen), sqLen)
+
+float baseline = switch baseMAType
+    "SMA"    => _sma
+    "EMA"    => _ema
+    "WMA"    => _wma
+    "DEMA"   => _dema
+    "TEMA"   => _tema
+    "HullMA" => _hull
+    => _wma
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  ATR-NORMALIZED DEVIATION
+// ══════════════════════════════════════════════════════════════════════════════
+
+int aLen = math.max(atrPeriod, 2)
+
+float _tr   = na(close[1]) ? high - low : math.max(high - low, math.max(math.abs(high - close[1]), math.abs(low - close[1])))
+float _atrA = 1.0 / aLen
+var float atrVal = na
+atrVal := na(atrVal[1]) ? _tr : _atrA * _tr + (1 - _atrA) * atrVal[1]
+
+float deviation = src - baseline
+float rawZ = atrVal != 0 ? deviation / atrVal : 0.0
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  EMA SMOOTHING
+// ══════════════════════════════════════════════════════════════════════════════
+
+int sLen = math.max(smoothLen, 2)
+float _smEmaA = 2.0 / (sLen + 1)
+var float _smEma = na
+_smEma := na(_smEma[1]) ? rawZ : _smEmaA * rawZ + (1 - _smEmaA) * _smEma[1]
+
+float smoothed = smoothLen > 0 ? _smEma : rawZ
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  FINAL OSCILLATOR
+// ══════════════════════════════════════════════════════════════════════════════
+
+float oscillator = smoothed * gain + bias
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  DYNAMIC STANDARD DEVIATION BANDS
+//  Rolling stdev of the oscillator → upper/lower bands with fill
+// ══════════════════════════════════════════════════════════════════════════════
+
+float oscMean = ta.sma(oscillator, bandLen)
+float oscStd  = ta.stdev(oscillator, bandLen)
+
+float upperBand1 = oscMean + oscStd
+float upperBand2 = oscMean + oscStd * 0.5
+float lowerBand2 = oscMean - oscStd * 0.5
+float lowerBand1 = oscMean - oscStd
+
+// Signal thresholds based on dynamic bands
+float upperThresh = oscMean + oscStd * styleMult
+float lowerThresh = oscMean - oscStd * styleMult
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  SIGNAL DOTS — Turn detection with noise suppression
+//  Sell: oscillator turns down while above upper threshold
+//  Buy:  oscillator turns up while below lower threshold
+// ══════════════════════════════════════════════════════════════════════════════
+
+bool turnDown = oscillator < oscillator[1]
+bool turnUp   = oscillator > oscillator[1]
+
+bool sellSignal = turnDown and oscillator[1] > upperThresh
+bool buySignal  = turnUp   and oscillator[1] < lowerThresh
+
+// Noise suppression: only show if oscillator[1] is the highest/lowest in last N bars
+if noiseSup > 0 and sellSignal
+    for i = 2 to noiseSup + 1
+        if oscillator[i] > oscillator[1]
+            sellSignal := false
+            break
+
+if noiseSup > 0 and buySignal
+    for i = 2 to noiseSup + 1
+        if oscillator[i] < oscillator[1]
+            buySignal := false
+            break
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  AUTO-FIT DIAGNOSTIC (optional)
+// ══════════════════════════════════════════════════════════════════════════════
+
+float pearsonR = 0.0
+float autoGain = gain
+float autoBias = bias
+float rmse     = 0.0
+
+if showAutoFit
+    float _afMeanX = ta.sma(smoothed, corrWindow)
+    float _afMeanY = ta.sma(origPlot, corrWindow)
+    float _afCov   = ta.sma(smoothed * origPlot, corrWindow) - _afMeanX * _afMeanY
+    float _afVarX  = ta.sma(smoothed * smoothed, corrWindow) - _afMeanX * _afMeanX
+    float _afVarY  = ta.sma(origPlot * origPlot, corrWindow) - _afMeanY * _afMeanY
+    float _afStdX  = math.sqrt(math.max(_afVarX, 0))
+    float _afStdY  = math.sqrt(math.max(_afVarY, 0))
+    pearsonR := (_afStdX > 0 and _afStdY > 0) ? _afCov / (_afStdX * _afStdY) : 0.0
+    autoGain := _afVarX > 0.0001 ? _afCov / _afVarX : 1.0
+    autoBias := _afMeanY - autoGain * _afMeanX
+    float _err = oscillator - origPlot
+    rmse := math.sqrt(ta.sma(_err * _err, corrWindow))
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  BACKTEST ENGINE
+// ══════════════════════════════════════════════════════════════════════════════
+
+int btStartTime = timestamp(btStartYear, btStartMonth, btStartDay, 16, 0)
+int btEndTime   = timestamp(btEndYear, btEndMonth, btEndDay, 16, 0)
+bool inBtWindow = time >= btStartTime and time <= btEndTime
+
+// Position tracking
+var float btCash     = btCapital
+var float btShares   = 0.0
+var float btEntryPx  = 0.0
+var int   btBuys     = 0
+var int   btSells    = 0
+var int   btWins     = 0
+var int   btLosses   = 0
+var float btTotalPnL = 0.0
+
+// Trade execution price
+float execPrice = btTrigger == "Bar Open" ? open : close
+
+if showBacktest and inBtWindow
+    // BUY signal → open long position
+    if buySignal and btShares == 0.0
+        float allocAmount = switch btEntryType
+            "% Current Capital" => btCash * (btEntryPct / 100.0)
+            "% Initial Capital" => btCapital * (btEntryPct / 100.0)
+            "Fixed Amount"      => btEntryPct
+            => btCash * (btEntryPct / 100.0)
+        allocAmount := math.min(allocAmount, btCash)
+        if allocAmount > 0 and execPrice > 0
+            btShares   := allocAmount / execPrice
+            btEntryPx  := execPrice
+            btCash     -= allocAmount
+            btBuys     += 1
+
+    // SELL signal → close long position
+    if sellSignal and btShares > 0.0
+        float exitValue = btShares * execPrice
+        float pnl = exitValue - (btShares * btEntryPx)
+        btCash     += exitValue
+        btTotalPnL += pnl
+        btSells    += 1
+        if pnl > 0
+            btWins += 1
+        else
+            btLosses += 1
+        btShares  := 0.0
+        btEntryPx := 0.0
+
+float btPortfolioValue = btCash + btShares * close
+float btProfit = btPortfolioValue - btCapital
+float btROI = btCapital > 0 ? (btProfit / btCapital) * 100.0 : 0.0
+int btTotalTrades = btWins + btLosses
+float btWinPct = btTotalTrades > 0 ? (float(btWins) / float(btTotalTrades)) * 100.0 : 0.0
+int btOpenPos = btShares > 0 ? 1 : 0
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  PLOTTING
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Line color
+color lnCol = switch lineColor
+    "Blue"   => color.rgb(33, 150, 243)
+    "Red"    => color.rgb(255, 82, 82)
+    "Green"  => color.rgb(76, 175, 80)
+    "White"  => color.white
+    "Yellow" => color.rgb(255, 235, 59)
+    => color.rgb(33, 150, 243)
+
+plot(oscillator, "Oscillator", color=lnCol, linewidth=lineWidth)
+plot(showAutoFit and showOrig ? origPlot : na, "Original", color=color.rgb(255, 193, 7), linewidth=1)
+
+// Dynamic bands
+p_ub1 = plot(upperBand1, "Upper Band 1", color=color.new(color.red, 70), linewidth=1, style=plot.style_line)
+p_ub2 = plot(upperBand2, "Upper Band 2", color=color.new(color.red, 85), linewidth=1, style=plot.style_line)
+p_lb2 = plot(lowerBand2, "Lower Band 2", color=color.new(color.green, 85), linewidth=1, style=plot.style_line)
+p_lb1 = plot(lowerBand1, "Lower Band 1", color=color.new(color.green, 70), linewidth=1, style=plot.style_line)
+p_mid = plot(oscMean, "Mean", color=color.new(color.gray, 80), linewidth=1, style=plot.style_line)
+
+fill(p_ub2, p_ub1, color=color.new(color.red, 80))
+fill(p_lb1, p_lb2, color=color.new(color.green, 80))
+
+// Zero line
+hline(0, "Zero", color=color.new(color.gray, 70), linestyle=hline.style_dotted)
+
+// Signal dots
+plotshape(sellSignal ? oscillator : na, "Sell Signal", shape.circle, location.absolute,
+     color.rgb(255, 82, 82), size=size.tiny)
+plotshape(buySignal ? oscillator : na, "Buy Signal", shape.circle, location.absolute,
+     color.rgb(76, 175, 80), size=size.tiny)
+
+// Data window
+plot(rawZ,      "Raw Z",     display=display.data_window, color=color.new(color.white, 100))
+plot(smoothed,  "Smoothed",  display=display.data_window, color=color.new(color.white, 100))
+plot(baseline,  "Baseline",  display=display.data_window, color=color.new(color.white, 100))
+plot(atrVal,    "ATR",       display=display.data_window, color=color.new(color.white, 100))
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  BACKTEST RESULTS TABLE
+// ══════════════════════════════════════════════════════════════════════════════
+
+if barstate.islast and showBacktest
+    var tblPosVal = btTblPos == "Top Left" ? position.top_left :
+         btTblPos == "Top Right" ? position.top_right :
+         btTblPos == "Bottom Left" ? position.bottom_left :
+         btTblPos == "Bottom Right" ? position.bottom_right :
+         btTblPos == "Bottom Center" ? position.bottom_center :
+         position.top_center
+
+    var txtSz = btTextSize == "Small" ? size.small :
+         btTextSize == "Large" ? size.large : size.normal
+
+    color profitColor = btProfit >= 0 ? color.rgb(76, 175, 80) : color.rgb(255, 82, 82)
+
+    if btTblLayout == "Horizontal"
+        int cols = btTextLen == "Short" ? 9 : 9
+        var table btTbl = table.new(tblPosVal, cols, 2,
+             bgcolor=color.new(color.black, 20), border_width=1,
+             border_color=color.new(color.gray, 60))
+
+        // Headers
+        table.cell(btTbl, 0, 0, "Mean-BT",  text_color=color.gray, text_size=txtSz)
+        table.cell(btTbl, 1, 0, "Profit",   text_color=color.gray, text_size=txtSz)
+        table.cell(btTbl, 2, 0, "ROI",      text_color=color.gray, text_size=txtSz)
+        table.cell(btTbl, 3, 0, "Win%",     text_color=color.gray, text_size=txtSz)
+        table.cell(btTbl, 4, 0, "Buys",     text_color=color.gray, text_size=txtSz)
+        table.cell(btTbl, 5, 0, "Sells",    text_color=color.gray, text_size=txtSz)
+        table.cell(btTbl, 6, 0, "Open",     text_color=color.gray, text_size=txtSz)
+        table.cell(btTbl, 7, 0, "Capital",  text_color=color.gray, text_size=txtSz)
+        table.cell(btTbl, 8, 0, "Total",    text_color=color.gray, text_size=txtSz)
+
+        // Values
+        table.cell(btTbl, 0, 1, "Results",
+             text_color=color.white, text_size=txtSz)
+        table.cell(btTbl, 1, 1, str.tostring(math.round(btProfit)),
+             text_color=profitColor, text_size=txtSz)
+        table.cell(btTbl, 2, 1, str.tostring(btROI, "#.##") + "%",
+             text_color=profitColor, text_size=txtSz)
+        table.cell(btTbl, 3, 1, str.tostring(btWinPct, "#.##") + "%",
+             text_color=btWinPct >= 50 ? color.rgb(76, 175, 80) : color.rgb(255, 82, 82), text_size=txtSz)
+        table.cell(btTbl, 4, 1, str.tostring(btBuys),
+             text_color=color.white, text_size=txtSz)
+        table.cell(btTbl, 5, 1, str.tostring(btSells),
+             text_color=color.white, text_size=txtSz)
+        table.cell(btTbl, 6, 1, str.tostring(btOpenPos),
+             text_color=color.white, text_size=txtSz)
+        table.cell(btTbl, 7, 1, str.tostring(math.round(btCash)),
+             text_color=color.white, text_size=txtSz)
+        table.cell(btTbl, 8, 1, str.tostring(math.round(btPortfolioValue)),
+             text_color=profitColor, text_size=txtSz)
+    else
+        // Vertical layout
+        var table btTbl = table.new(tblPosVal, 2, 9,
+             bgcolor=color.new(color.black, 20), border_width=1,
+             border_color=color.new(color.gray, 60))
+
+        table.cell(btTbl, 0, 0, "Mean-BT",  text_color=color.gray, text_size=txtSz)
+        table.cell(btTbl, 1, 0, "Results",   text_color=color.white, text_size=txtSz)
+        table.cell(btTbl, 0, 1, "Profit",    text_color=color.gray, text_size=txtSz)
+        table.cell(btTbl, 1, 1, str.tostring(math.round(btProfit)), text_color=profitColor, text_size=txtSz)
+        table.cell(btTbl, 0, 2, "ROI",       text_color=color.gray, text_size=txtSz)
+        table.cell(btTbl, 1, 2, str.tostring(btROI, "#.##") + "%", text_color=profitColor, text_size=txtSz)
+        table.cell(btTbl, 0, 3, "Win%",      text_color=color.gray, text_size=txtSz)
+        table.cell(btTbl, 1, 3, str.tostring(btWinPct, "#.##") + "%",
+             text_color=btWinPct >= 50 ? color.rgb(76, 175, 80) : color.rgb(255, 82, 82), text_size=txtSz)
+        table.cell(btTbl, 0, 4, "Buys",      text_color=color.gray, text_size=txtSz)
+        table.cell(btTbl, 1, 4, str.tostring(btBuys), text_color=color.white, text_size=txtSz)
+        table.cell(btTbl, 0, 5, "Sells",     text_color=color.gray, text_size=txtSz)
+        table.cell(btTbl, 1, 5, str.tostring(btSells), text_color=color.white, text_size=txtSz)
+        table.cell(btTbl, 0, 6, "Open",      text_color=color.gray, text_size=txtSz)
+        table.cell(btTbl, 1, 6, str.tostring(btOpenPos), text_color=color.white, text_size=txtSz)
+        table.cell(btTbl, 0, 7, "Capital",   text_color=color.gray, text_size=txtSz)
+        table.cell(btTbl, 1, 7, str.tostring(math.round(btCash)), text_color=color.white, text_size=txtSz)
+        table.cell(btTbl, 0, 8, "Total",     text_color=color.gray, text_size=txtSz)
+        table.cell(btTbl, 1, 8, str.tostring(math.round(btPortfolioValue)), text_color=profitColor, text_size=txtSz)
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  SETTINGS TABLE (optional)
+// ══════════════════════════════════════════════════════════════════════════════
+
+if barstate.islast and showTable
+    var table settingsTbl = table.new(position.top_right, 2, 14,
+         bgcolor=color.new(color.black, 30), border_width=1,
+         border_color=color.new(color.gray, 60), frame_width=1,
+         frame_color=color.new(color.gray, 40))
+
+    table.cell(settingsTbl, 0, 0, "Style",      text_color=color.gray,   text_size=size.small)
+    table.cell(settingsTbl, 1, 0, tradingStyle,  text_color=color.white,  text_size=size.small)
+    table.cell(settingsTbl, 0, 1, "Base MA",     text_color=color.gray,   text_size=size.small)
+    table.cell(settingsTbl, 1, 1, baseMAType + "(" + str.tostring(baseLen) + ")", text_color=color.yellow, text_size=size.small)
+    table.cell(settingsTbl, 0, 2, "ATR Period",  text_color=color.gray,   text_size=size.small)
+    table.cell(settingsTbl, 1, 2, str.tostring(atrPeriod), text_color=color.yellow, text_size=size.small)
+    table.cell(settingsTbl, 0, 3, "Smooth",      text_color=color.gray,   text_size=size.small)
+    table.cell(settingsTbl, 1, 3, smoothLen > 0 ? "EMA(" + str.tostring(smoothLen) + ")" : "None", text_color=color.yellow, text_size=size.small)
+    table.cell(settingsTbl, 0, 4, "Source",      text_color=color.gray,   text_size=size.small)
+    table.cell(settingsTbl, 1, 4, srcInput,      text_color=color.yellow, text_size=size.small)
+    table.cell(settingsTbl, 0, 5, "Gain",        text_color=color.gray,   text_size=size.small)
+    table.cell(settingsTbl, 1, 5, str.tostring(gain, "#.####"), text_color=color.yellow, text_size=size.small)
+    table.cell(settingsTbl, 0, 6, "Bias",        text_color=color.gray,   text_size=size.small)
+    table.cell(settingsTbl, 1, 6, str.tostring(bias, "#.####"), text_color=color.yellow, text_size=size.small)
+    table.cell(settingsTbl, 0, 7, "Noise Sup",   text_color=color.gray,   text_size=size.small)
+    table.cell(settingsTbl, 1, 7, str.tostring(noiseSup), text_color=color.yellow, text_size=size.small)
+
+    if showAutoFit
+        color rColor = pearsonR > 0.95 ? color.lime : pearsonR > 0.85 ? color.yellow : color.red
+        table.cell(settingsTbl, 0, 8, "",            text_size=size.small)
+        table.cell(settingsTbl, 1, 8, "",            text_size=size.small)
+        table.cell(settingsTbl, 0, 9, "Pearson R",   text_color=color.gray, text_size=size.small)
+        table.cell(settingsTbl, 1, 9, str.tostring(pearsonR, "#.####"), text_color=rColor, text_size=size.small)
+        table.cell(settingsTbl, 0, 10,"RMSE",        text_color=color.gray, text_size=size.small)
+        table.cell(settingsTbl, 1, 10,str.tostring(rmse, "#.####"), text_color=color.yellow, text_size=size.small)
+        table.cell(settingsTbl, 0, 11,"Sug. Gain",   text_color=color.gray, text_size=size.small)
+        table.cell(settingsTbl, 1, 11,str.tostring(autoGain, "#.####"), text_color=color.lime, text_size=size.small)
+        table.cell(settingsTbl, 0, 12,"Sug. Bias",   text_color=color.gray, text_size=size.small)
+        table.cell(settingsTbl, 1, 12,str.tostring(autoBias, "#.####"), text_color=color.lime, text_size=size.small)
